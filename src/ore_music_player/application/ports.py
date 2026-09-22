@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ore_music_player.domain.models import Track
+from ore_music_player.domain.models import Playlist, Track
 
 
 class PlaybackBackend(Protocol):
@@ -29,4 +29,17 @@ class PlaybackBackend(Protocol):
         start_seconds: float | None,
         end_seconds: float | None,
     ) -> None:
+        ...
+
+class PlaylistRepository(Protocol):
+    def get(self, playlist_id: str) -> Playlist | None:
+        ...
+
+    def list_all(self) -> tuple[Playlist, ...]:
+        ...
+
+    def save(self, playlist: Playlist) -> None:
+        ...
+
+    def delete(self, playlist_id: str) -> None:
         ...

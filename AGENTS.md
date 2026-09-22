@@ -1,11 +1,22 @@
 # ore-music-player
 
+## Non-Negotiable Editing Rules
+
+- Do not create, edit, delete, or revert project files unless the user explicitly asks for that exact file operation.
+- Requests such as "続けましょう", "お願いします", or "進めましょう" do not authorize file changes. In those cases, inspect and explain only.
+- Before any file-editing tool call, state the exact files to change, why each file must change, and the focused validation command.
+- If the user has not explicitly authorized the change, stop before editing.
+- Review requests are read-only. Sample-code requests produce chat responses only. Implementation requires explicit user authorization.
+- Test execution must not modify project files unless the user explicitly requests generated-file changes.
+- Never revert user changes or previously requested documentation changes. Before reverting, identify the exact unauthorized changes and report them.
+
 ## Project Status
 
 - This repository is being rebuilt as a clean-room personal music player.
 - The tracked wxPython prototype was intentionally removed from the working tree. Do not restore legacy files or treat the old architecture as the target unless the user explicitly asks for it.
-- A source and test scaffold now exists, but the placeholder files contain no application code yet. Do not treat the scaffold as a runnable application.
-- There is currently no runnable entrypoint or approved build/test command. Document exact commands here when implementation makes them valid.
+- The domain playback model and application playback service are implemented, but the application is not runnable yet.
+- Playlist management, persistence, the real audio backend, bootstrap, UI, and the package entrypoint remain unimplemented.
+- The current repeatable validation commands are `python -m pytest -q` and `python -m ruff check src tests` from the project root.
 
 ## Product Direction
 
@@ -23,6 +34,14 @@
 - Do not add an unverified playback backend as a runtime dependency. Confirm seeking, A-B looping, speed range, supported formats, and pitch-preserving time stretch in a disposable probe first.
 - Keep long-running source-separation and chord-analysis work off the UI and playback threads.
 - Update `DESIGN.md` when a product or architecture decision changes, and update `README.md` when setup or usage changes.
+
+## Current Implementation Boundary
+
+- Implemented domain types: `Track`, `LoopRegion`, `PlaybackSettings`, `PlaybackState`, and `PlaybackStatus`.
+- Implemented playback rules: speed validation from `0.50` to `1.50` in `0.05` steps, play/pause/stop, seeking, A/B points, and loop state.
+- Implemented application service: `PlaybackService` coordinates the domain state with the `PlaybackBackend` protocol.
+- Implemented tests: domain and playback-service unit tests currently pass 20 tests.
+- Not implemented: playlist models and service, SQLite repository, real playback backend, application bootstrap, Qt windows, package entrypoint, source separation, and chord analysis.
 
 ## Design Before Implementation
 

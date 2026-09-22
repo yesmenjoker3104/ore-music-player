@@ -1,14 +1,29 @@
 # ore-music-player 設計書
 
-この文書は、実装前に合意した製品要件とアーキテクチャを記録する。未検証の技術選択は確定事項として扱わない。
+この文書は、現在の実装状況、合意した製品要件、アーキテクチャを記録する。未検証の技術選択は確定事項として扱わない。
 
 ## ステータス
 
-- 現在は設計フェーズで、アプリ本体は未実装。
-- `src/ore_music_player/` と `tests/` の構成および空のプレースホルダーファイルは作成済み。
-- `src/ore_music_player/__main__.py` は配置済みだが空のため、現時点ではアプリを起動できない。
+- ドメイン層と再生制御のアプリケーション層は実装済み。
+- 実音声バックエンド、プレイリスト、永続化、UI、起動処理は未実装。
+- 現時点ではアプリを起動して音声を再生することはできない。
 - 対象はデスクトップとタブレットでのタッチ操作。
 - 画面上の各要素は大きくし、ホバー操作や小さなアイコンだけに依存しない。
+
+## 実装状況
+
+| 領域 | 状態 | 内容 |
+| --- | --- | --- |
+| ドメインモデル | 実装済み | `Track`、`LoopRegion`、`PlaybackSettings`、速度と位置の検証 |
+| 再生状態 | 実装済み | 再生、一時停止、停止、シーク、A/Bポイント、ループ状態 |
+| 再生サービス | 実装済み | `PlaybackService` と `PlaybackBackend` 契約の同期 |
+| ドメイン・再生サービスのテスト | 実装済み | pytest 20件 |
+| プレイリスト | 未実装 | モデル、順序、キュー、サービス、テスト |
+| 永続化 | 未実装 | SQLiteスキーマ、リポジトリ、統合テスト |
+| 音声再生 | 未実装 | バックエンド選定、実音声、シーク、タイムストレッチ |
+| アプリ起動 | 未実装 | `app.py`、`bootstrap.py`、`__main__.py` |
+| UI | 未実装 | PySide6の再生画面とプレイリスト画面 |
+| 分析 | 未実装 | 音源分離、パート音量、コード進行分析 |
 
 ## 現在のスキャフォールド
 
@@ -58,7 +73,7 @@ ore-music-player/
         └── test_sqlite_repository.py
 ```
 
-`.venv/` と `.git/` はローカル環境・Git管理用であり、アプリケーションの構成には含めない。上記の Python ファイルは、実装を開始するまで空のプレースホルダーとして扱う。
+`.venv/` と `.git/` はローカル環境・Git管理用であり、アプリケーションの構成には含めない。空のファイルは未実装のプレースホルダーであり、実装済みのファイルは上記の実装状況に従う。
 
 ## ソースファイルの責務
 
@@ -88,7 +103,7 @@ ore-music-player/
 | ファイル | 担当すること | 担当しないこと |
 | --- | --- | --- |
 | `src/ore_music_player/application/__init__.py` | アプリケーションサービスの公開 API をまとめる。 | 起動処理や画面生成。 |
-| `src/ore_music_player/application/playback_service.py` | 音源・フォルダ・プレイリストから再生キューを作る。再生、一時停止、停止、シーク、次曲、A/B設定、速度変更を調整する。 | libmpv の API を直接呼ぶこと、ボタンの見た目。 |
+| `src/ore_music_player/application/playback_service.py` | 現在の曲の再生、一時停止、停止、シーク、A/B設定、速度変更を調整する。将来は再生キュー操作を追加する。 | libmpv の API を直接呼ぶこと、ボタンの見た目。 |
 | `src/ore_music_player/application/playlist_service.py` | プレイリストの作成、名前変更、削除、曲追加、フォルダ追加、曲削除、並べ替え、保存、読み込みを調整する。 | SQL文、ファイルダイアログ、UIレイアウト。 |
 | `src/ore_music_player/application/ports.py` | `PlaybackBackend`、`PlaylistRepository`、音源スキャナー、分析ジョブ実行器など、外部実装が満たす契約を定義する。 | 契約の具体的な実装、QtやSQLiteの import。 |
 
@@ -122,6 +137,7 @@ UI層は表示とユーザー入力の変換だけを担当する。SQLiteや再
 | ファイル | 担当すること |
 | --- | --- |
 | `tests/unit/test_playback_state.py` | 速度範囲、刻み、A/B区間、再生状態遷移、曲終了時のルールを外部機器なしで検証する。 |
+| `tests/unit/test_playback_service.py` | ダミーバックエンドを使い、再生制御とドメイン状態の同期を検証する。 |
 | `tests/unit/test_playlist.py` | プレイリストの作成、順序、追加・削除、重複、キュー生成のルールを検証する。 |
 | `tests/integration/test_sqlite_repository.py` | 一時SQLiteデータベースに対する保存、読み込み、更新、再起動後の復元を検証する。 |
 
@@ -149,6 +165,13 @@ python -m ore_music_player
 ```
 
 `__main__.py` が空の間は起動できない。コンソールスクリプト名 `ore-music-player` は、入口の `main()` を実装して動作確認した後に `pyproject.toml` へ登録する。
+
+現在の最小検証コマンドは次のとおりである。
+
+```powershell
+python -m pytest -q
+python -m ruff check src tests
+```
 
 ## 依存方向と禁止事項
 
