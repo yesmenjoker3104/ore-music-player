@@ -119,3 +119,50 @@ class PlaybackSettings:
             self,
             speed=validate_playback_speed(value),
         )
+
+@dataclass(frozen=True, slots=True)
+class Playlist:
+    playlist_id: str
+    name: str
+    tracks: tuple[Track, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.playlist_id.strip():
+            raise ValueError("playlist_idは空にできません")
+
+        if not self.name.strip():
+            raise ValueError("nameは空にできません")
+
+        track_ids = [track.track_id for track in self.tracks]
+        if len(track_ids) != len(set(track_ids)):
+            raise ValueError("tracksには重複するtrack_idを含めることはできません")
+
+    def rename(self, new_name: str) -> Playlist:
+        if not new_name.strip():
+            raise ValueError("nameは空にできません")
+        return replace(self, name=new_name)
+
+    def add_track(self, track: Track) -> Playlist:
+        if any(t.track_id == track.track_id for t in self.tracks):
+            raise ValueError("tracksには重複するtrack_idを含めることはできません")
+        return replace(self, tracks=(*self.tracks, track))
+
+    def remove_track(self, track_id: str) -> Playlist:
+        if not track_id.strip():
+            raise ValueError("track_idは空にできません")
+
+        if not any(t.track_id == track_id for t in self.tracks):
+            raise ValueError(f"指定されたtrack_idは存在しません: {track_id}")
+        return replace(self, tracks=tuple(t for t in self.tracks if t.track_id != track_id))
+
+    def move_track(self, current_index: int, new_index: int) -> Playlist:
+        track_count = len(self.tracks)
+        if not 0 <= current_index < track_count:
+            raise ValueError("current_indexが範囲外です")
+        if not 0 <= new_index < track_count:
+            raise ValueError("new_indexが範囲外です")
+
+        tracks = list(self.tracks)
+        track = tracks.pop(current_index)
+        tracks.insert(new_index, track)
+        return replace(self, tracks=tuple(tracks))
