@@ -27,6 +27,13 @@ def test_speed_accepts_valid_values(value, expected):
     assert state.speed == expected
 
 
+def test_speed_accepts_values_calculated_by_slider():
+    slider_value = 4
+    speed = round(0.5 + slider_value * 0.05, 2)
+
+    assert PlaybackState().set_speed(speed).speed == Decimal("0.70")
+
+
 @pytest.mark.parametrize(
     "value",
     [
