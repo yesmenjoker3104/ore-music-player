@@ -62,25 +62,42 @@ python -m ruff check src tests
 
 再生バックエンドは `python-mpv` を使用します。`python-mpv` は Python から
 mpv を操作するためのバインディングであり、実際の再生には mpv の共有 DLL
-（`libmpv-2.dll` または `mpv-2.dll`）も必要です。
+（`libmpv-2.dll`、`mpv-2.dll`、または `mpv-1.dll`）も必要です。
 
-1. [mpv公式のWindows案内](https://mpv.io/installation/) から Windows ビルドを取得します。
-	x64 Python を使用する場合は x86_64 版を選択してください。
-2. mpv のファイルをプロジェクトの `vendor\mpv` へ配置します。
-3. 展開先に `libmpv-2.dll` または `mpv-2.dll` があることを確認します。
-4. mpv のフォルダーを、Python を実行する前に PATH へ追加します。
+`python-mpv` は `python -m pip install -e ".[dev]"` でインストールされます。
+一方、mpvのWindowsランタイムDLLはサイズが大きく、Gitリポジトリへは含めていません。
+`vendor/mpv/` は `.gitignore` 対象なので、各開発環境で個別に配置してください。
 
-```powershell
-$env:PATH = (Join-Path (Get-Location) "vendor\mpv") + ";" + $env:PATH
-python -m pip install -e ".[dev]"
-python -c "import mpv; print('mpv import ok')"
+1. [mpv公式のWindows案内](https://mpv.io/installation/) からWindows版を取得します。
+	x64 Pythonを使用する場合はx86_64版を選択してください。
+2. 共有DLLが含まれる開発用アーカイブ（`mpv-dev-x86_64-*.7z` など）を取得します。
+	通常版の `mpv.exe` だけでは、Pythonから使用する共有DLLが含まれない場合があります。
+3. アーカイブを展開し、次のフォルダーへDLLを配置します。
+
+```text
+ore-music-player/
+└── vendor/
+	 └── mpv/
+		  ├── libmpv-2.dll    # または mpv-2.dll / mpv-1.dll
+		  └── その他の依存DLL
 ```
 
-`mpv.exe` だけの通常版に共有 DLL が含まれていない場合は、同じリリースの
-`mpv-dev-x86_64-*.7z` など開発用アーカイブから DLL を取得してください。
-Python と mpv のアーキテクチャ（x64 / x86）は一致させる必要があります。
+プロジェクトルートで次のコマンドを実行すると、配置先を作成して確認できます。
 
-`python -m ore_music_player` は将来の起動コマンドです。`src/ore_music_player/__main__.py` が未実装のため、現在は使用できません。
+```powershell
+New-Item -ItemType Directory -Force vendor\mpv
+Get-ChildItem vendor\mpv\*.dll
+python -m pip install -e ".[dev]"
+python -c "import mpv; print('mpv import ok')"
+python -m ore_music_player
+```
+
+アプリ起動時に `bootstrap.py` が `vendor/mpv` を検査し、必要なDLLをPATHとDLL検索対象へ
+追加します。通常は実行前にPATHを手動設定する必要はありません。
+Pythonとmpvのアーキテクチャ（x64 / x86）は一致させてください。
+
+mpvランタイムが未配置の場合、起動時に `vendor/mpv` または共有DLLが見つからないという
+エラーになります。その場合は上記の手順でローカルに配置してください。
 
 ## 開発方針
 
