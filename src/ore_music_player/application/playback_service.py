@@ -81,6 +81,11 @@ class PlaybackService:
         self._sync_loop()
         return self.state
 
+    def clear_loop(self) -> PlaybackState:
+        self.state = self.state.clear_loop_points()
+        self._sync_loop()
+        return self.state
+
     def _sync_loop(self) -> None:
         region = self.state.loop_region if self.state.loop_enabled else None
         if region is None:

@@ -58,6 +58,28 @@ python -m pytest -q
 python -m ruff check src tests
 ```
 
+### Windows の mpv セットアップ
+
+再生バックエンドは `python-mpv` を使用します。`python-mpv` は Python から
+mpv を操作するためのバインディングであり、実際の再生には mpv の共有 DLL
+（`libmpv-2.dll` または `mpv-2.dll`）も必要です。
+
+1. [mpv公式のWindows案内](https://mpv.io/installation/) から Windows ビルドを取得します。
+	x64 Python を使用する場合は x86_64 版を選択してください。
+2. mpv のファイルをプロジェクトの `vendor\mpv` へ配置します。
+3. 展開先に `libmpv-2.dll` または `mpv-2.dll` があることを確認します。
+4. mpv のフォルダーを、Python を実行する前に PATH へ追加します。
+
+```powershell
+$env:PATH = (Join-Path (Get-Location) "vendor\mpv") + ";" + $env:PATH
+python -m pip install -e ".[dev]"
+python -c "import mpv; print('mpv import ok')"
+```
+
+`mpv.exe` だけの通常版に共有 DLL が含まれていない場合は、同じリリースの
+`mpv-dev-x86_64-*.7z` など開発用アーカイブから DLL を取得してください。
+Python と mpv のアーキテクチャ（x64 / x86）は一致させる必要があります。
+
 `python -m ore_music_player` は将来の起動コマンドです。`src/ore_music_player/__main__.py` が未実装のため、現在は使用できません。
 
 ## 開発方針

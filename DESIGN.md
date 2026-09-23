@@ -4,8 +4,8 @@
 
 ## ステータス
 
-- ドメイン層と再生制御のアプリケーション層は実装済み。
-- 実音声バックエンド、プレイリスト、永続化、UI、起動処理は未実装。
+- ドメイン層、再生制御、プレイリスト管理のアプリケーション層は実装済み。
+- 実音声バックエンド、永続化、UI、起動処理は未実装。
 - 現時点ではアプリを起動して音声を再生することはできない。
 - 対象はデスクトップとタブレットでのタッチ操作。
 - 画面上の各要素は大きくし、ホバー操作や小さなアイコンだけに依存しない。
@@ -17,8 +17,8 @@
 | ドメインモデル | 実装済み | `Track`、`LoopRegion`、`PlaybackSettings`、速度と位置の検証 |
 | 再生状態 | 実装済み | 再生、一時停止、停止、シーク、A/Bポイント、ループ状態 |
 | 再生サービス | 実装済み | `PlaybackService` と `PlaybackBackend` 契約の同期 |
-| ドメイン・再生サービスのテスト | 実装済み | pytest 20件 |
-| プレイリスト | 未実装 | モデル、順序、キュー、サービス、テスト |
+| ドメイン・サービスのテスト | 実装済み | pytest 20件。再生状態、再生サービス、プレイリスト、プレイリストサービスを検証 |
+| プレイリスト | 一部実装済み | `Playlist` モデル、曲順操作、`PlaylistService`、ユニットテスト。キュー統合と永続化は未実装 |
 | 永続化 | 未実装 | SQLiteスキーマ、リポジトリ、統合テスト |
 | 音声再生 | 未実装 | バックエンド選定、実音声、シーク、タイムストレッチ |
 | アプリ起動 | 未実装 | `app.py`、`bootstrap.py`、`__main__.py` |
@@ -37,7 +37,6 @@ ore-music-player/
 ├── src/
 │   └── ore_music_player/
 │       ├── __init__.py
-│       ├── __main__.py
 │       ├── app.py
 │       ├── bootstrap.py
 │       ├── domain/
@@ -68,7 +67,9 @@ ore-music-player/
 └── tests/
     ├── unit/
     │   ├── test_playback_state.py
-    │   └── test_playlist.py
+  │   ├── test_playback_service.py
+    │   ├── test_playlist.py
+    │   └── test_playlist_service.py
     └── integration/
         └── test_sqlite_repository.py
 ```
@@ -139,6 +140,7 @@ UI層は表示とユーザー入力の変換だけを担当する。SQLiteや再
 | `tests/unit/test_playback_state.py` | 速度範囲、刻み、A/B区間、再生状態遷移、曲終了時のルールを外部機器なしで検証する。 |
 | `tests/unit/test_playback_service.py` | ダミーバックエンドを使い、再生制御とドメイン状態の同期を検証する。 |
 | `tests/unit/test_playlist.py` | プレイリストの作成、順序、追加・削除、重複、キュー生成のルールを検証する。 |
+| `tests/unit/test_playlist_service.py` | Fakeリポジトリを使い、プレイリストの作成、取得、更新、削除を検証する。 |
 | `tests/integration/test_sqlite_repository.py` | 一時SQLiteデータベースに対する保存、読み込み、更新、再起動後の復元を検証する。 |
 
 音声バックエンドの実機検証は、音声デバイスや再生エンジンが必要になるため、ドメイン単体テストとは分離する。
