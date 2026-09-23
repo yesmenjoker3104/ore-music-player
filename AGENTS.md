@@ -14,8 +14,9 @@
 
 - This repository is being rebuilt as a clean-room personal music player.
 - The tracked wxPython prototype was intentionally removed from the working tree. Do not restore legacy files or treat the old architecture as the target unless the user explicitly asks for it.
-- The domain playback model and application playback service are implemented, but the application is not runnable yet.
-- Playlist management, persistence, the real audio backend, bootstrap, UI, and the package entrypoint remain unimplemented.
+- The domain playback model, application services, SQLite persistence, libmpv backend, bootstrap, PySide6 UI, and package entrypoint are implemented.
+- The application is runnable with `python -m ore_music_player` when the Windows mpv shared DLL is present under the local, ignored `vendor/mpv/` directory.
+- Source separation, per-part volume control, and chord analysis remain intentionally unimplemented.
 - The current repeatable validation commands are `python -m pytest -q` and `python -m ruff check src tests` from the project root.
 
 ## Product Direction
@@ -40,14 +41,17 @@
 - Implemented domain types: `Track`, `LoopRegion`, `PlaybackSettings`, `PlaybackState`, and `PlaybackStatus`.
 - Implemented playback rules: speed validation from `0.50` to `1.50` in `0.05` steps, play/pause/stop, seeking, A/B points, and loop state.
 - Implemented application service: `PlaybackService` coordinates the domain state with the `PlaybackBackend` protocol.
-- Implemented tests: domain and playback-service unit tests currently pass 20 tests.
-- Not implemented: playlist models and service, SQLite repository, real playback backend, application bootstrap, Qt windows, package entrypoint, source separation, and chord analysis.
+- Implemented tests: domain, playback-service, playlist, SQLite repository, and PlaylistView tests currently pass 43 tests.
+- Implemented UI scope: multi-file and recursive folder loading, playback queue navigation, seeking, A/B points, A/B looping, speed control, and playlist CRUD with multi-track add/remove.
+- Not implemented or limited: playlist folder import, playlist reorder UI, queue listing/shuffle/repeat details, missing-file warnings and skip behavior, source separation, per-part volume control, and chord analysis.
 
 ## Design Before Implementation
 
 - Do not modify project files during product or architecture discussion unless the user explicitly requests implementation.
 - If the user has previously asked not to implement, require an explicit implementation request such as "実装を開始して" or "コードを書いて" before editing. Do not treat ambiguous confirmations such as "お願いします", "了解", or "進めましょう" as permission to edit; ask for confirmation when the intent is unclear.
-- Before implementation, confirm the GUI toolkit, playback backend, supported audio formats, playlist persistence format, and the time-stretching approach for slow playback.
+- Confirmed implementation choices: PySide6 for the GUI, `python-mpv`/libmpv for playback, SQLite for playlist persistence, and `audio_pitch_correction=True` for mpv playback speed changes.
+- Supported file filters currently exposed by the UI are `.mp3`, `.wav`, `.flac`, `.m4a`, and `.ogg`.
+- Before extending the application, confirm any new GUI behavior, playback backend behavior, supported audio formats, persistence changes, and time-stretching assumptions.
 - Prefer a layered design with domain state and use cases separate from platform/audio adapters and UI code.
 - Treat A-B loop points and playback speed as application state, not as widget-only state, so they can be tested without opening the UI.
 - Keep audio analysis behind an explicit service boundary; analysis must not block the playback or UI thread.
@@ -63,9 +67,9 @@
 ## Dependency Spike
 
 - Before committing to a GUI or playback backend, validate it in the selected Python 3.13 virtual environment with a small, disposable probe.
-- The probe must verify package imports, opening a generated or fixture audio file, seeking, A-B boundary handling, and the requested speed range.
-- Verify that slow playback preserves pitch. Do not describe a backend as compatible with the product requirements based only on a generic playback-rate property.
-- Record the tested package versions, supported formats, and any platform limitations before building the main application around the dependency.
+- The current implementation uses libmpv and requires a local Windows shared DLL (`libmpv-2.dll`, `mpv-2.dll`, or `mpv-1.dll`) under `vendor/mpv/`.
+- Keep real audio-device and format checks separate from the regular domain/UI test suite.
+- Record package versions, supported formats, and platform limitations when changing the playback backend.
 
 ## Legacy Context
 
@@ -77,4 +81,6 @@
 
 - Add focused tests for playlist ordering, A-B loop boundaries, speed state, and persistence before relying on UI-level tests.
 - Keep audio-device and file-format checks separate from pure domain tests.
-- After implementation begins, document the smallest repeatable validation command and use it after each focused change.
+- The smallest repeatable validation command is `python -m pytest -q` followed by `python -m ruff check src tests` from the project root.
+- Set `QT_QPA_PLATFORM=offscreen` on headless environments before running the Qt tests.
+- After each focused change, run the smallest relevant test first and then the full validation commands before reporting completion.

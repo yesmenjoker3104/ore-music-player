@@ -4,11 +4,11 @@
 
 ## ステータス
 
-- ドメイン層、再生制御、プレイリスト管理のアプリケーション層は実装済み。
-- 実音声バックエンド、永続化、UI、起動処理は未実装。
-- 現時点ではアプリを起動して音声を再生することはできない。
+- ドメイン層、再生制御、プレイリスト管理、SQLite永続化、PySide6 UI、起動処理は実装済み。
+- Windows上のmpv共有DLLを `vendor/mpv` に配置した環境で、アプリを起動して音声を再生できる。
+- 音源分離、パート別音量変更、コード進行分析は未実装で、今回の対象外とする。
 - 対象はデスクトップとタブレットでのタッチ操作。
-- 画面上の各要素は大きくし、ホバー操作や小さなアイコンだけに依存しない。
+- 画面上の操作ボタンは正方形タイルとし、最大5列で配置する。
 
 ## 実装状況
 
@@ -17,12 +17,12 @@
 | ドメインモデル | 実装済み | `Track`、`LoopRegion`、`PlaybackSettings`、速度と位置の検証 |
 | 再生状態 | 実装済み | 再生、一時停止、停止、シーク、A/Bポイント、ループ状態 |
 | 再生サービス | 実装済み | `PlaybackService` と `PlaybackBackend` 契約の同期 |
-| ドメイン・サービスのテスト | 実装済み | pytest 20件。再生状態、再生サービス、プレイリスト、プレイリストサービスを検証 |
-| プレイリスト | 一部実装済み | `Playlist` モデル、曲順操作、`PlaylistService`、ユニットテスト。キュー統合と永続化は未実装 |
-| 永続化 | 未実装 | SQLiteスキーマ、リポジトリ、統合テスト |
-| 音声再生 | 未実装 | バックエンド選定、実音声、シーク、タイムストレッチ |
-| アプリ起動 | 未実装 | `app.py`、`bootstrap.py`、`__main__.py` |
-| UI | 未実装 | PySide6の再生画面とプレイリスト画面 |
+| ドメイン・サービスのテスト | 実装済み | pytest 43件。再生状態、再生サービス、プレイリスト、SQLite、PlaylistViewを検証 |
+| プレイリスト | 実装済み | `Playlist`、`PlaylistService`、作成・名前変更・削除、複数曲追加・削除、SQLite保存、画面操作 |
+| 永続化 | 実装済み | SQLiteスキーマ、プレイリストと曲順の保存・復元、統合テスト |
+| 音声再生 | 実装済み | `python-mpv` と libmpv による再生、停止、シーク、速度変更、A/Bループ |
+| アプリ起動 | 実装済み | `app.py`、`bootstrap.py`、`__main__.py`、`python -m ore_music_player` |
+| UI | 一部実装済み | PySide6の再生画面とプレイリスト画面。複数ファイル・フォルダ読み込み、キュー操作、A/B操作に対応 |
 | 分析 | 未実装 | 音源分離、パート音量、コード進行分析 |
 
 ## 現在のスキャフォールド
@@ -74,7 +74,7 @@ ore-music-player/
         └── test_sqlite_repository.py
 ```
 
-`.venv/` と `.git/` はローカル環境・Git管理用であり、アプリケーションの構成には含めない。空のファイルは未実装のプレースホルダーであり、実装済みのファイルは上記の実装状況に従う。
+`.venv/`、`.git/`、`vendor/mpv/` はローカル環境または実行用ランタイムであり、アプリケーションのソース構成には含めない。`vendor/mpv/` は `.gitignore` 対象で、実行時には利用者が対応するmpv共有DLLを配置する。空の分析ファイルは未実装のプレースホルダーであり、実装済みのファイルは上記の実装状況に従う。
 
 ## ソースファイルの責務
 
@@ -104,8 +104,8 @@ ore-music-player/
 | ファイル | 担当すること | 担当しないこと |
 | --- | --- | --- |
 | `src/ore_music_player/application/__init__.py` | アプリケーションサービスの公開 API をまとめる。 | 起動処理や画面生成。 |
-| `src/ore_music_player/application/playback_service.py` | 現在の曲の再生、一時停止、停止、シーク、A/B設定、速度変更を調整する。将来は再生キュー操作を追加する。 | libmpv の API を直接呼ぶこと、ボタンの見た目。 |
-| `src/ore_music_player/application/playlist_service.py` | プレイリストの作成、名前変更、削除、曲追加、フォルダ追加、曲削除、並べ替え、保存、読み込みを調整する。 | SQL文、ファイルダイアログ、UIレイアウト。 |
+| `src/ore_music_player/application/playback_service.py` | 現在の曲の再生、一時停止、停止、シーク、A/B設定、ループ、速度変更を調整する。 | libmpv の API を直接呼ぶこと、ボタンの見た目。 |
+| `src/ore_music_player/application/playlist_service.py` | プレイリストの作成、名前変更、削除、曲追加、曲削除、並べ替え、保存、読み込みを調整する。 | SQL文、ファイルダイアログ、UIレイアウト。 |
 | `src/ore_music_player/application/ports.py` | `PlaybackBackend`、`PlaylistRepository`、音源スキャナー、分析ジョブ実行器など、外部実装が満たす契約を定義する。 | 契約の具体的な実装、QtやSQLiteの import。 |
 
 ### インフラストラクチャ層
@@ -116,7 +116,7 @@ ore-music-player/
 | --- | --- | --- |
 | `src/ore_music_player/infrastructure/__init__.py` | インフラ実装の公開 API をまとめる。 | ドメインルールや画面操作。 |
 | `src/ore_music_player/infrastructure/audio/__init__.py` | 音声バックエンド実装の公開 API をまとめる。 | 再生キューやプレイリストの管理。 |
-| `src/ore_music_player/infrastructure/audio/playback_backend.py` | 採用した再生エンジンをラップする。デコード、音声出力、シーク、再生位置、A/B境界、ピッチ維持タイムストレッチを扱う。 | プレイリストの保存、Qt画面の操作、分析結果の表示。 |
+| `src/ore_music_player/infrastructure/audio/playback_backend.py` | `python-mpv` と libmpv をラップする。音声出力、シーク、A/B境界、速度変更、ピッチ補正を扱う。 | プレイリストの保存、Qt画面の操作、分析結果の表示。 |
 | `src/ore_music_player/infrastructure/persistence/__init__.py` | 永続化実装の公開 API をまとめる。 | SQLスキーマ以外のドメイン判断。 |
 | `src/ore_music_player/infrastructure/persistence/sqlite_repository.py` | SQLiteの接続、テーブル作成、プレイリスト、曲順、音源情報、分析結果の保存・取得を実装する。 | UIイベント、音声デコード、分析モデルの実行。 |
 | `src/ore_music_player/infrastructure/analysis/__init__.py` | 分析実装の公開 API をまとめる。 | 再生ボタンの処理。 |
@@ -130,8 +130,8 @@ UI層は表示とユーザー入力の変換だけを担当する。SQLiteや再
 | ファイル | 担当すること | 担当しないこと |
 | --- | --- | --- |
 | `src/ore_music_player/ui/__init__.py` | UI部品の公開 API をまとめる。 | ドメイン状態の所有、DB接続。 |
-| `src/ore_music_player/ui/main_window.py` | 上部タブ、再生画面、タッチしやすい再生コントロール、速度スライダー、現在キューを構成する。 | 音声データの加工、SQL、分析モデルの実行。 |
-| `src/ore_music_player/ui/playlist_view.py` | プレイリスト一覧、曲一覧、新規作成、編集、削除、曲順変更、プレイリスト再生の操作画面を構成する。 | プレイリストの保存処理、ファイルの直接走査。 |
+| `src/ore_music_player/ui/main_window.py` | 再生・プレイリストのタブ、正方形タイルボタン、速度スライダー、複数ファイル・フォルダ読み込み、キュー移動、シーク、A/B操作を構成する。 | 音声データの加工、SQL、分析モデルの実行。 |
+| `src/ore_music_player/ui/playlist_view.py` | プレイリスト一覧、曲一覧、新規作成、名前変更、削除、複数曲追加、曲削除、プレイリスト再生の操作画面を構成する。 | プレイリストの保存処理、再生エンジンの直接操作。 |
 
 ### テスト
 
@@ -142,6 +142,7 @@ UI層は表示とユーザー入力の変換だけを担当する。SQLiteや再
 | `tests/unit/test_playlist.py` | プレイリストの作成、順序、追加・削除、重複、キュー生成のルールを検証する。 |
 | `tests/unit/test_playlist_service.py` | Fakeリポジトリを使い、プレイリストの作成、取得、更新、削除を検証する。 |
 | `tests/integration/test_sqlite_repository.py` | 一時SQLiteデータベースに対する保存、読み込み、更新、再起動後の復元を検証する。 |
+| `tests/unit/test_playlist_view.py` | Qtをオフスクリーンで起動し、PlaylistViewの表示、曲追加・削除、再生要求を検証する。 |
 
 音声バックエンドの実機検証は、音声デバイスや再生エンジンが必要になるため、ドメイン単体テストとは分離する。
 
@@ -166,13 +167,20 @@ python -m pip install -e ".[dev]"
 python -m ore_music_player
 ```
 
-`__main__.py` が空の間は起動できない。コンソールスクリプト名 `ore-music-player` は、入口の `main()` を実装して動作確認した後に `pyproject.toml` へ登録する。
+`__main__.py` と `app.py` は実装済みで、`python -m ore_music_player` で起動する。現在はコンソールスクリプト名を登録せず、モジュール起動を標準コマンドとする。
 
 現在の最小検証コマンドは次のとおりである。
 
 ```powershell
 python -m pytest -q
 python -m ruff check src tests
+```
+
+Qt画面を表示できない環境では、次のようにオフスクリーンでテストする。
+
+```powershell
+$env:QT_QPA_PLATFORM = "offscreen"
+python -m pytest -q
 ```
 
 ## 依存方向と禁止事項
@@ -191,12 +199,12 @@ bootstrap -> ui + application + infrastructure
 - `infrastructure` は `ports` の実装を提供する。
 - `ui` は `application` を呼び出すだけで、SQLiteや再生バックエンドを直接操作しない。
 - `bootstrap` 以外で具体的な実装を手作業で生成しない。
-- 音源分離、コード分析、データベース処理で UI スレッドをブロックしない。
+- 音源分離、コード分析、データベース処理で UI スレッドをブロックしない。音源分離とコード分析は未実装のため、現段階では再生とプレイリスト機能の範囲に限定する。
 - 個人環境の音楽フォルダ、OS固有パス、認証情報をソースにハードコードしない。
 
 ## 確定要件
 
-### 最初に必要な機能
+### 現在実装している機能
 
 - 音楽ファイルを1曲以上読み込んで再生する。
 - フォルダを1つ以上読み込んで再生する。
@@ -205,6 +213,19 @@ bootstrap -> ui + application + infrastructure
 - 再生速度を変更する。
 - 速度を変更しても音程を維持するタイムストレッチを使う。
 - プレイリストを作成、編集、保存、削除する。
+- 複数の音声ファイルを選択して再生キューへ読み込む。
+- フォルダ以下の対応音声ファイルを再帰的に読み込む。
+- キューの前後の曲へ移動する。
+- 位置を秒単位で指定してシークする。
+- 再生画面とプレイリスト画面をタブで切り替える。
+
+### 未実装または制限のある機能
+
+- プレイリスト画面からのフォルダ追加。
+- プレイリスト画面での曲順変更UI。
+- 再生キューの一覧表示、シャッフル、リピート詳細設定。
+- 移動・削除された音源の警告と再生時スキップ。
+- 音源分離、パート別音量変更、コード進行分析。
 
 ### 再生速度
 
