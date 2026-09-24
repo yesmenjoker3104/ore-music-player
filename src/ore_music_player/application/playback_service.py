@@ -16,6 +16,14 @@ class PlaybackService:
         self.backend = backend
         self.state = state or PlaybackState()
 
+    @property
+    def position_seconds(self) -> float:
+        return self.backend.position_seconds
+
+    @property
+    def duration_seconds(self) -> float | None:
+        return self.backend.duration_seconds
+
     def load(self, track: Track) -> PlaybackState:
         self.backend.load(track)
         self.state = self.state.load_track(track.track_id)

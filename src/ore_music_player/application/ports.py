@@ -31,6 +31,15 @@ class PlaybackBackend(Protocol):
     ) -> None:
         ...
 
+    @property
+    def position_seconds(self) -> float:
+        ...
+
+    @property
+    def duration_seconds(self) -> float | None:
+        ...
+
+
 class PlaylistRepository(Protocol):
     def get(self, playlist_id: str) -> Playlist | None:
         ...
