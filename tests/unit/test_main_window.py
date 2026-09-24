@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QItemSelectionModel, Qt
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QIcon, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -123,6 +123,17 @@ def test_file_operations_are_in_file_menu_not_tile_buttons(
     window.close()
 
 
+def test_application_icon_is_configured(
+    qt_application: QApplication,
+) -> None:
+    from ore_music_player.app import _application_icon_path
+
+    icon_path = _application_icon_path()
+    assert icon_path.is_file()
+    qt_application.setWindowIcon(QIcon(str(icon_path)))
+    assert not qt_application.windowIcon().isNull()
+
+
 def test_file_tree_uses_filesystem_hierarchy_and_duration_column(
     qt_application: QApplication,
     tmp_path,
@@ -165,6 +176,75 @@ def test_file_tree_uses_filesystem_hierarchy_and_duration_column(
     window.close()
 
 
+def test_open_folders_keep_both_folders_visible(
+    qt_application: QApplication,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    window._settings.clear()
+    window._registered_paths.clear()
+    window._registered_folders.clear()
+    window._queue = ()
+    window._drive_roots.clear()
+    window.drive_selector.clear()
+    parent_folder = tmp_path / "band-practice"
+    first_folder = parent_folder / "first-band"
+    second_folder = parent_folder / "second-band"
+    first_folder.mkdir(parents=True)
+    second_folder.mkdir()
+    first_path = first_folder / "first.wav"
+    second_path = second_folder / "second.wav"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: str(first_folder),
+    )
+    window.open_folder()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: str(second_folder),
+    )
+    window.open_folder()
+
+    assert Path(window.file_root_label.text()) == first_folder
+    assert {Path(track.path) for track in window._queue} == {
+        first_path,
+        second_path,
+    }
+    window.close()
+
+
+def test_registered_folder_roots_merge_nested_folder_under_parent(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    window._settings.clear()
+    window._registered_paths.clear()
+    window._registered_folders.clear()
+    pc_folder = tmp_path / "04_PC"
+    music_folder = tmp_path / "05_MUSIC"
+    nested_folder = music_folder / "band" / "OT"
+    pc_folder.mkdir()
+    nested_folder.mkdir(parents=True)
+
+    window._registered_folders.update({pc_folder, music_folder, nested_folder})
+    window._registered_paths.update(
+        {
+            pc_folder / "pc.wav",
+            nested_folder / "ot.wav",
+        }
+    )
+    window.file_system_model.set_root_paths(window._registered_folders)
+
+    assert window.file_system_model._root_paths == (pc_folder, music_folder)
+    window.close()
+
+
 def test_delete_button_unregisters_multiple_selected_audio_files(
     qt_application: QApplication,
     monkeypatch,
@@ -200,21 +280,67 @@ def test_delete_button_unregisters_multiple_selected_audio_files(
 
     assert first_path.exists()
     assert second_path.exists()
-    assert window.file_tree.isRowHidden(
-        window.file_system_model.index(str(first_path)).row(),
-        window.file_system_model.index(str(first_path)).parent(),
-    )
-    assert window.file_tree.isRowHidden(
-        window.file_system_model.index(str(second_path)).row(),
-        window.file_system_model.index(str(second_path)).parent(),
-    )
+    assert not window.file_system_model.index(str(first_path)).isValid()
+    assert not window.file_system_model.index(str(second_path)).isValid()
     assert window._queue == ()
     assert window._current_track is None
     assert not window.delete_file_button.isEnabled()
     window.close()
 
 
-def test_delete_button_ignores_folders_and_cancel_keeps_file(
+def test_delete_button_supports_folders_and_cancel_keeps_file(
+    qt_application: QApplication,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    window._settings.clear()
+    window._registered_paths.clear()
+    window._registered_folders.clear()
+    folder_path = tmp_path / "practice"
+    folder_path.mkdir()
+    audio_path = tmp_path / "practice.wav"
+    audio_path.write_bytes(b"audio")
+    window._set_file_tree_root(tmp_path)
+    window._registered_folders.add(folder_path.resolve())
+    window._update_file_tree_visibility()
+    QTest.qWait(100)
+    window._update_file_tree_visibility()
+
+    selection_model = window.file_tree.selectionModel()
+    select_rows = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+    selection_model.select(window.file_system_model.index(str(folder_path)), select_rows)
+    qt_application.processEvents()
+    monkeypatch.setattr(
+        window,
+        "_selected_unregister_paths",
+        lambda: (folder_path,),
+    )
+    window._update_delete_button_state()
+    assert window.delete_file_button.isEnabled()
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
+    )
+    window.delete_selected_files()
+    assert folder_path.exists()
+    assert not window.file_tree.isRowHidden(
+        window.file_system_model.index(str(folder_path)).row(),
+        window.file_system_model.index(str(folder_path)).parent(),
+    )
+
+    selection_model.clearSelection()
+    selection_model.select(window.file_system_model.index(str(audio_path)), select_rows)
+    assert window.delete_file_button.isEnabled()
+    window.delete_selected_files()
+
+    assert audio_path.exists()
+    window.close()
+
+
+def test_delete_button_unregisters_folder_without_deleting_it(
     qt_application: QApplication,
     monkeypatch,
     tmp_path,
@@ -222,28 +348,28 @@ def test_delete_button_ignores_folders_and_cancel_keeps_file(
     window, _ = make_window(qt_application)
     folder_path = tmp_path / "practice"
     folder_path.mkdir()
-    audio_path = tmp_path / "practice.wav"
+    audio_path = folder_path / "song.wav"
     audio_path.write_bytes(b"audio")
     window._set_file_tree_root(tmp_path)
+    window._registered_folders.add(folder_path.resolve())
+    window.load_tracks(window._tracks_from_paths((audio_path,)))
     QTest.qWait(100)
 
     selection_model = window.file_tree.selectionModel()
     select_rows = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
     selection_model.select(window.file_system_model.index(str(folder_path)), select_rows)
-    assert not window.delete_file_button.isEnabled()
-
-    selection_model.clearSelection()
-    selection_model.select(window.file_system_model.index(str(audio_path)), select_rows)
-    assert window.delete_file_button.isEnabled()
     monkeypatch.setattr(
         QMessageBox,
         "warning",
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
     )
 
     window.delete_selected_files()
 
+    assert folder_path.exists()
     assert audio_path.exists()
+    assert window._queue == ()
+    assert audio_path.resolve() not in window._registered_paths
     window.close()
 
 
@@ -253,6 +379,7 @@ def test_left_pane_settings_are_saved_and_restored(
 ) -> None:
     window, _ = make_window(qt_application)
     window._settings.clear()
+    window._registered_paths.clear()
     window._set_file_tree_root(tmp_path)
     window.main_splitter.setSizes([240, 720])
     window._save_left_pane_settings()
@@ -263,15 +390,46 @@ def test_left_pane_settings_are_saved_and_restored(
     try:
         qt_application.processEvents()
         assert Path(restored_window.file_system_model.rootPath()) == tmp_path
-        assert (
-            Path(
-                restored_window.file_system_model.filePath(
-                    restored_window.file_tree.rootIndex()
-                )
-            )
-            == tmp_path
-        )
+        assert not restored_window.file_tree.rootIndex().isValid()
         assert restored_window.main_splitter.sizes()[0] == saved_left_width
+    finally:
+        settings = restored_window._settings
+        restored_window.close()
+        settings.clear()
+        settings.sync()
+
+
+def test_registered_tracks_are_restored_after_root_changes(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    window._settings.clear()
+    window._registered_paths.clear()
+    first_folder = tmp_path / "first-drive"
+    second_folder = tmp_path / "second-drive"
+    first_folder.mkdir()
+    second_folder.mkdir()
+    first_path = first_folder / "first.wav"
+    second_path = second_folder / "second.wav"
+    first_path.write_bytes(b"audio")
+    second_path.write_bytes(b"audio")
+
+    window._set_file_tree_root(first_folder)
+    window._append_tracks(window._tracks_from_paths((first_path,)))
+    window._set_file_tree_root(second_folder)
+    window._append_tracks(window._tracks_from_paths((second_path,)))
+    window.close()
+
+    restored_window, _ = make_window(qt_application)
+    try:
+        assert restored_window._registered_paths == {
+            first_path.resolve(),
+            second_path.resolve(),
+        }
+        assert {
+            Path(track.path).resolve() for track in restored_window._queue
+        } == restored_window._registered_paths
     finally:
         settings = restored_window._settings
         restored_window.close()
@@ -303,6 +461,9 @@ def test_open_folder_loads_all_audio_files(
     tmp_path,
 ) -> None:
     window, _ = make_window(qt_application)
+    window._settings.clear()
+    window._registered_paths.clear()
+    window._queue = ()
     music_folder = tmp_path / "music"
     music_folder.mkdir()
     nested_folder = music_folder / "practice"
@@ -332,8 +493,143 @@ def test_open_folder_loads_all_audio_files(
     ]
     qt_application.processEvents()
     nested_index = window.file_system_model.index(str(nested_folder))
-    assert window.file_tree.isExpanded(nested_index)
-    assert window.file_system_model.rowCount(nested_index) == 2
+    assert not window.file_tree.isExpanded(nested_index)
+    assert not window.file_tree.isRowHidden(
+        window.file_system_model.index(str(music_folder / "first.wav")).row(),
+        window.file_system_model.index(str(music_folder / "first.wav")).parent(),
+    )
+    window.close()
+
+
+def test_file_tree_hides_unregistered_audio_files(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    music_folder = tmp_path / "music"
+    music_folder.mkdir()
+    registered_path = music_folder / "registered.wav"
+    unregistered_path = music_folder / "unregistered.wav"
+    for path in (registered_path, unregistered_path):
+        path.write_bytes(b"audio")
+
+    window._set_file_tree_root(music_folder)
+    window.load_tracks(window._tracks_from_paths((registered_path,)))
+    QTest.qWait(100)
+
+    registered_index = window.file_system_model.index(str(registered_path))
+    unregistered_index = window.file_system_model.index(str(unregistered_path))
+    assert not window.file_tree.isRowHidden(
+        registered_index.row(), registered_index.parent()
+    )
+    assert window.file_tree.isRowHidden(
+        unregistered_index.row(), unregistered_index.parent()
+    )
+    window.close()
+
+
+def test_registered_audio_remains_visible_after_loading_another_track(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    first_path = tmp_path / "first.wav"
+    second_path = tmp_path / "second.wav"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+    window._set_file_tree_root(tmp_path)
+
+    window.load_tracks(window._tracks_from_paths((first_path,)))
+    window.load_tracks(window._tracks_from_paths((second_path,)))
+    QTest.qWait(100)
+
+    first_index = window.file_system_model.index(str(first_path))
+    second_index = window.file_system_model.index(str(second_path))
+    assert not window.file_tree.isRowHidden(first_index.row(), first_index.parent())
+    assert not window.file_tree.isRowHidden(second_index.row(), second_index.parent())
+    window.close()
+
+
+def test_drive_selector_is_available_for_multiple_registered_drives(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    window._registered_paths = {
+        Path("C:/Music/song.wav"),
+        Path("D:/Practice/song.wav"),
+    }
+    window._refresh_drive_selector()
+
+    assert not window.drive_selector.isHidden()
+    assert {
+        window.drive_selector.itemText(index)
+        for index in range(window.drive_selector.count())
+    } == {str(Path("C:/")), str(Path("D:/"))}
+    window.drive_selector.setCurrentText(str(Path("D:/")))
+    assert window._drive_root_path(str(Path("D:/"))) == Path(
+        "D:/Practice"
+    )
+    window.close()
+
+
+def test_open_folder_appends_to_existing_queue(
+    qt_application: QApplication,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    first_path = tmp_path / "first.wav"
+    second_folder = tmp_path / "second"
+    second_folder.mkdir()
+    second_path = second_folder / "second.wav"
+    for path in (first_path, second_path):
+        with wave.open(str(path), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(100)
+            audio.writeframes(b"\0\0" * 100)
+
+    window.load_tracks(window._tracks_from_paths((first_path,)))
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: str(second_folder),
+    )
+
+    window.open_folder()
+
+    assert [Path(track.path).name for track in window._queue] == [
+        "first.wav",
+        "second.wav",
+    ]
+    window.close()
+
+
+def test_open_folder_does_not_duplicate_existing_tracks(
+    qt_application: QApplication,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    music_folder = tmp_path / "music"
+    music_folder.mkdir()
+    audio_path = music_folder / "song.wav"
+    with wave.open(str(audio_path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(100)
+        audio.writeframes(b"\0\0" * 100)
+
+    window.load_tracks(window._tracks_from_paths((audio_path,)))
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: str(music_folder),
+    )
+
+    window.open_folder()
+
+    assert [Path(track.path).name for track in window._queue] == ["song.wav"]
     window.close()
 
 
@@ -369,6 +665,57 @@ def test_play_pause_uses_one_toggle_button(
     assert window.status_label.text() == "再生中"
     assert window.play_pause_button.text() == "一時停止"
 
+    window.close()
+
+
+def test_selecting_file_then_pressing_play_starts_that_file(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, backend = make_window(qt_application)
+    first_path = tmp_path / "first.wav"
+    second_path = tmp_path / "second.wav"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+
+    window._set_file_tree_root(tmp_path)
+    window.load_tracks((Track("track-001", str(first_path), "First"),))
+    second_index = window.file_system_model.index(str(second_path))
+    window.file_tree.setCurrentIndex(second_index)
+    window.stop()
+
+    window.play_pause_button.click()
+
+    assert window._current_track is not None
+    assert Path(window._current_track.path) == second_path
+    assert backend.play_calls == 2
+    window.close()
+
+
+def test_double_clicking_existing_queued_file_starts_it(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, backend = make_window(qt_application)
+    first_path = tmp_path / "first.wav"
+    second_path = tmp_path / "second.wav"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+
+    window._set_file_tree_root(tmp_path)
+    window.load_tracks(
+        (
+            Track("track-001", str(first_path), "First"),
+            Track("track-002", str(second_path), "Second"),
+        )
+    )
+    second_index = window.file_system_model.index(str(second_path))
+    window._load_file_from_tree(second_index)
+
+    assert window._queue_index == 1
+    assert window._current_track is not None
+    assert Path(window._current_track.path) == second_path
+    assert backend.play_calls == 2
     window.close()
 
 
