@@ -15,6 +15,7 @@ class LibMpvPlaybackBackend:
             audio_pitch_correction=True,
         )
         self._current_track: Track | None = None
+        self._is_stopped = True
 
     def load(self, track: Track) -> None:
         path = Path(track.path)
@@ -23,8 +24,14 @@ class LibMpvPlaybackBackend:
         self._current_track = track
         self._player.stop()
         self._player.play(str(path))
+        self._is_stopped = False
 
     def play(self) -> None:
+        if self._current_track is None:
+            return
+        if self._is_stopped:
+            self._player.play(self._current_track.path)
+            self._is_stopped = False
         self._player.pause = False
 
     def pause(self) -> None:
@@ -32,12 +39,12 @@ class LibMpvPlaybackBackend:
 
     def stop(self) -> None:
         self._player.stop()
-        self._current_track = None
+        self._is_stopped = True
 
     def seek(self, position: float) -> None:
-        if position < 0 :
+        if position < 0:
             raise ValueError("再生位置は0以上で指定してください")
-        self._player.seek(position, reference='absolute')
+        self._player.seek(position, reference="absolute")
 
     def set_speed(self, speed: float) -> None:
         if not 0.5 <= speed <= 1.5:
@@ -45,10 +52,10 @@ class LibMpvPlaybackBackend:
         self._player.speed = speed
 
     def set_loop(
-            self, 
-            start_seconds: float | None,
-            end_seconds: float | None,
-            ) -> None:
+        self,
+        start_seconds: float | None,
+        end_seconds: float | None,
+        ) -> None:
         if start_seconds is None or end_seconds is None:
             self._player.ab_loop_a = "no"
             self._player.ab_loop_b = "no"
@@ -57,6 +64,18 @@ class LibMpvPlaybackBackend:
             raise ValueError("ループの開始位置は終了位置より前で指定してください")
         self._player.ab_loop_a = start_seconds
         self._player.ab_loop_b = end_seconds
+        if self.position_seconds >= end_seconds:
+            self.seek(start_seconds)
+
+    @property
+    def position_seconds(self) -> float:
+        value = self._player.time_pos
+        return 0.0 if value is None else float(value)
+
+    @property
+    def duration_seconds(self) -> float | None:
+        value = self._player.duration
+        return None if value is None else float(value)
 
     @property
     def current_track(self) -> Track | None:

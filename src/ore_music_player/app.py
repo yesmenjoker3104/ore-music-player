@@ -15,5 +15,6 @@ def run() -> int:
 			components.playback_service,
 			components.playlist_service,
 		)
+		qt_application.aboutToQuit.connect(window._save_left_pane_settings)
 		window.show()
 		return qt_application.exec()
