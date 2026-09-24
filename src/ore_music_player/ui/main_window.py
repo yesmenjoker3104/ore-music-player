@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import (
+	QAbstractProxyModel,
 	QByteArray,
 	QDir,
 	QModelIndex,
@@ -14,9 +15,10 @@ from PySide6.QtCore import (
 	Qt,
 	QTimer,
 )
-from PySide6.QtGui import QAction, QColor, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
 	QAbstractItemView,
+	QComboBox,
 	QFileDialog,
 	QFileSystemModel,
 	QGridLayout,
@@ -29,7 +31,6 @@ from PySide6.QtWidgets import (
 	QSplitter,
 	QStyle,
 	QStyleOptionSlider,
-	QTabWidget,
 	QTreeView,
 	QVBoxLayout,
 	QWidget,
@@ -209,6 +210,185 @@ class AudioFileSystemModel(QFileSystemModel):
 			)
 
 
+class RegisteredFoldersModel(QAbstractProxyModel):
+	def __init__(self, source_model: AudioFileSystemModel, parent: QWidget | None = None) -> None:
+		super().__init__(parent)
+		self.setSourceModel(source_model)
+		self._root_paths: tuple[Path, ...] = ()
+		self._path_ids: dict[str, int] = {}
+		self._id_paths: dict[int, str] = {}
+		self._next_path_id = 1
+		self._playing_path: str | None = None
+
+	def set_root_paths(self, paths: set[Path]) -> None:
+		self.beginResetModel()
+		normalized_paths = {Path(path).resolve() for path in paths}
+		self._root_paths = tuple(
+			sorted(
+				(
+					path
+					for path in normalized_paths
+					if not any(
+						path != other and other in path.parents
+						for other in normalized_paths
+					)
+				),
+				key=lambda path: str(path).casefold(),
+			)
+		)
+		self._path_ids.clear()
+		self._id_paths.clear()
+		self._next_path_id = 1
+		self.endResetModel()
+
+	def _create_path_index(self, row: int, column: int, path: str) -> QModelIndex:
+		path = str(Path(path).resolve())
+		path_id = self._path_ids.get(path)
+		if path_id is None:
+			path_id = self._next_path_id
+			self._next_path_id += 1
+			self._path_ids[path] = path_id
+			self._id_paths[path_id] = path
+		return self.createIndex(row, column, path_id)
+
+	def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+		return self.sourceModel().columnCount()
+
+	def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+		if not parent.isValid():
+			return len(self._root_paths)
+		return self.sourceModel().rowCount(self.mapToSource(parent))
+
+	def index(self, row, column=None, parent=QModelIndex()) -> QModelIndex:
+		if isinstance(row, (str, Path)) and column is None:
+			return self.index_for_path(row)
+		if column is None:
+			return QModelIndex()
+		if row < 0 or column < 0:
+			return QModelIndex()
+		if not parent.isValid():
+			if row >= len(self._root_paths):
+				return QModelIndex()
+			source_index = self.sourceModel().index(str(self._root_paths[row]))
+		else:
+			source_parent = self.mapToSource(parent)
+			source_index = self.sourceModel().index(row, column, source_parent)
+		if not source_index.isValid():
+			return QModelIndex()
+		return self._create_path_index(
+			row,
+			column,
+			self.sourceModel().filePath(source_index),
+		)
+
+	def parent(self, child: QModelIndex) -> QModelIndex:
+		if not child.isValid():
+			return QModelIndex()
+		source_index = self.mapToSource(child)
+		source_parent = self.sourceModel().parent(source_index)
+		if not source_parent.isValid():
+			return QModelIndex()
+		return self.mapFromSource(source_parent)
+
+	def mapToSource(self, proxy_index: QModelIndex) -> QModelIndex:
+		if not proxy_index.isValid():
+			return QModelIndex()
+		path = self._id_paths.get(proxy_index.internalId())
+		if path is None:
+			return QModelIndex()
+		source_index = self.sourceModel().index(path)
+		return source_index.siblingAtColumn(proxy_index.column())
+
+	def mapFromSource(self, source_index: QModelIndex) -> QModelIndex:
+		if not source_index.isValid():
+			return QModelIndex()
+		item_path = Path(self.sourceModel().filePath(source_index)).resolve()
+		root = next(
+			(
+				root_path
+				for root_path in self._root_paths
+				if root_path == item_path or root_path in item_path.parents
+			),
+			None,
+		)
+		if root is None:
+			return QModelIndex()
+		if item_path == root:
+			return self._create_path_index(
+				self._root_paths.index(root),
+				source_index.column(),
+				str(item_path),
+			)
+		return self._create_path_index(
+			source_index.row(),
+			source_index.column(),
+			str(item_path),
+		)
+
+	def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+		if role == Qt.ItemDataRole.ForegroundRole:
+			path = self.filePath(index)
+			if self._playing_path and Path(path).resolve() == Path(
+				self._playing_path
+			).resolve():
+				return QColor("#d1495b")
+		return self.sourceModel().data(self.mapToSource(index), role)
+
+	def set_playing_path(self, path: str | Path | None) -> None:
+		previous_path = self._playing_path
+		self._playing_path = str(Path(path).resolve()) if path else None
+		for changed_path in (previous_path, self._playing_path):
+			if not changed_path:
+				continue
+			index = self.index_for_path(changed_path)
+			if index.isValid():
+				self.dataChanged.emit(
+					index,
+					index.siblingAtColumn(self.columnCount() - 1),
+					[Qt.ItemDataRole.ForegroundRole],
+				)
+
+	def flags(self, index: QModelIndex):
+		return self.sourceModel().flags(self.mapToSource(index))
+
+	def headerData(
+		self,
+		section: int,
+		orientation: Qt.Orientation,
+		role: int = Qt.ItemDataRole.DisplayRole,
+	):
+		return self.sourceModel().headerData(section, orientation, role)
+
+	def filePath(self, index: QModelIndex) -> str:
+		return self.sourceModel().filePath(self.mapToSource(index))
+
+	def fileName(self, index: QModelIndex) -> str:
+		return self.sourceModel().fileName(self.mapToSource(index))
+
+	def mimeData(self, indexes: list[QModelIndex]):
+		source_indexes = [
+			self.mapToSource(index)
+			for index in indexes
+			if index.isValid() and index.column() == 0
+		]
+		return self.sourceModel().mimeData(source_indexes)
+
+	def isDir(self, index: QModelIndex) -> bool:
+		return self.sourceModel().isDir(self.mapToSource(index))
+
+	def index_for_path(self, path: str | Path) -> QModelIndex:
+		return self.mapFromSource(self.sourceModel().index(str(path)))
+
+	def set_duration(self, path: str, duration: float) -> None:
+		self.sourceModel().set_duration(path, duration)
+
+	def setRootPath(self, path: str) -> QModelIndex:
+		return self.sourceModel().setRootPath(path)
+
+	def rootPath(self) -> str:
+		return self.sourceModel().rootPath()
+
+
 def _format_duration(seconds: float | None) -> str:
 	if seconds is None:
 		return "--:--"
@@ -225,8 +405,12 @@ class MainWindow(QMainWindow):
 	_SETTINGS_ORGANIZATION = "OreMusicPlayer"
 	_SETTINGS_APPLICATION = "OreMusicPlayer"
 	_SPLITTER_STATE_KEY = "leftPane/splitterState"
+	_SPLITTER_LAYOUT_VERSION_KEY = "leftPane/splitterLayoutVersion"
 	_FILE_TREE_HEADER_STATE_KEY = "leftPane/fileTreeHeaderState"
 	_FILE_TREE_ROOT_KEY = "leftPane/rootPath"
+	_REGISTERED_PATHS_KEY = "leftPane/registeredPaths"
+	_REGISTERED_FOLDERS_KEY = "leftPane/registeredFolders"
+	_DRIVE_ROOTS_GROUP = "leftPane/driveRoots"
 
 	def __init__(
 		self,
@@ -246,44 +430,71 @@ class MainWindow(QMainWindow):
 		self._is_playing = False
 		self._duration_seconds = 0.0
 		self._hidden_file_paths: set[Path] = set()
+		self._registered_paths: set[Path] = set()
+		self._registered_folders: set[Path] = self._load_registered_folders()
+		self._drive_roots = self._load_drive_roots()
+		self._splitter_migration_pending = self._settings.value(
+			self._SPLITTER_LAYOUT_VERSION_KEY,
+			0,
+			type=int,
+		) < 12
 
 		self.setWindowTitle("Ore Music Player")
-		self.resize(960, 620)
+		icon_path = Path(__file__).resolve().parents[1] / "assets" / "app_icon.ico"
+		self.setWindowIcon(QIcon(str(icon_path)))
+		self.resize(960, 800)
 		self._create_file_menu()
 
 		central_widget = QWidget()
 		layout = QVBoxLayout(central_widget)
+		layout.setContentsMargins(0, 0, 0, 0)
 		splitter = QSplitter(Qt.Orientation.Horizontal)
 		self.main_splitter = splitter
 		splitter.splitterMoved.connect(self._save_left_pane_settings)
 		layout.addWidget(splitter)
 
 		file_panel = QWidget()
+		file_panel.setMinimumWidth(0)
 		file_layout = QVBoxLayout(file_panel)
-		file_layout.addWidget(QLabel("ファイル一覧"))
+		file_layout.setContentsMargins(0, 0, 0, 0)
 		self.file_root_label = QLabel()
-		file_layout.addWidget(self.file_root_label)
-		self.delete_file_button = QPushButton("削除")
-		self.delete_file_button.setEnabled(False)
-		self.delete_file_button.clicked.connect(self.delete_selected_files)
-		file_layout.addWidget(self.delete_file_button)
-		self.file_system_model = AudioFileSystemModel(self)
-		self.file_system_model.setFilter(
+		self.file_root_label.setSizePolicy(
+			QSizePolicy.Policy.Ignored,
+			QSizePolicy.Policy.Fixed,
+		)
+		self.file_root_label.setTextInteractionFlags(
+			Qt.TextInteractionFlag.TextSelectableByMouse
+		)
+		self.drive_selector = QComboBox(self)
+		self.drive_selector.setPlaceholderText("登録ドライブ")
+		self.drive_selector.currentTextChanged.connect(self._switch_drive)
+		self.drive_selector.setVisible(False)
+		file_layout.addWidget(self.drive_selector)
+		self._source_file_system_model = AudioFileSystemModel(self)
+		self._source_file_system_model.setFilter(
 			QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot
 		)
-		self.file_system_model.setNameFilters(SUPPORTED_AUDIO_NAME_FILTERS)
-		self.file_system_model.setNameFilterDisables(False)
+		self._source_file_system_model.setNameFilters(SUPPORTED_AUDIO_NAME_FILTERS)
+		self._source_file_system_model.setNameFilterDisables(False)
+		self.file_system_model = RegisteredFoldersModel(
+			self._source_file_system_model,
+			self,
+		)
+		self._sync_file_tree_roots()
 		default_root_path = Path(QDir.currentPath()).anchor or QDir.rootPath()
 		root_path = self._settings.value(
 			self._FILE_TREE_ROOT_KEY,
 			default_root_path,
 			type=str,
 		)
-		if not Path(root_path).is_dir():
-			root_path = default_root_path
-		self.file_system_model.setRootPath(root_path)
+		self._source_file_system_model.setRootPath(root_path)
 		self.file_root_label.setText(root_path)
 		self.file_tree = QTreeView()
+		self.file_tree.setSizePolicy(
+			QSizePolicy.Policy.Ignored,
+			QSizePolicy.Policy.Expanding,
+		)
+		self.file_tree.setMinimumSize(0, 0)
 		self.file_tree.setModel(self.file_system_model)
 		self.file_tree.setSelectionMode(
 			QAbstractItemView.SelectionMode.ExtendedSelection
@@ -291,28 +502,40 @@ class MainWindow(QMainWindow):
 		self.file_tree.setSelectionBehavior(
 			QAbstractItemView.SelectionBehavior.SelectRows
 		)
-		self.file_tree.setRootIndex(self.file_system_model.index(root_path))
-		self.file_tree.setColumnWidth(0, 280)
-		self.file_tree.setColumnWidth(1, 90)
+		self.file_tree.setDragEnabled(True)
+		self.file_tree.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+		self.file_tree.setRootIndex(QModelIndex())
 		self._restore_left_pane_settings()
+		self.file_tree.setColumnWidth(0, 240)
+		self.file_tree.setColumnWidth(1, 65)
 		self.file_tree.doubleClicked.connect(self._load_file_from_tree)
 		self.file_tree.selectionModel().selectionChanged.connect(
 			self._update_delete_button_state
 		)
-		self.file_system_model.directoryLoaded.connect(
-			self._hide_hidden_file_tree_rows
+		self.file_tree.selectionModel().currentChanged.connect(
+			self._update_file_tree_path
+		)
+		self._source_file_system_model.directoryLoaded.connect(
+			self._update_file_tree_visibility
 		)
 		file_layout.addWidget(self.file_tree)
+		self._restore_registered_tracks()
 		splitter.addWidget(file_panel)
+		self.delete_file_button = QPushButton("削除")
+		self.delete_file_button.setEnabled(False)
+		self.delete_file_button.clicked.connect(self.delete_selected_files)
+		file_layout.addWidget(self.delete_file_button)
 
-		tabs = QTabWidget()
-		splitter.addWidget(tabs)
+		right_splitter = QSplitter(Qt.Orientation.Vertical)
+		splitter.addWidget(right_splitter)
 		splitter.setStretchFactor(0, 1)
 		splitter.setStretchFactor(1, 2)
-		splitter.setSizes([320, 640])
+		splitter.setSizes([170, 790])
 
 		player_widget = QWidget()
 		player_layout = QVBoxLayout(player_widget)
+		player_layout.setContentsMargins(0, 0, 0, 0)
+		player_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
 		self.track_label = QLabel("曲が選択されていません")
 		self.status_label = QLabel("停止中")
@@ -326,7 +549,6 @@ class MainWindow(QMainWindow):
 		track_status_layout.setContentsMargins(0, 0, 0, 0)
 		track_status_layout.setSpacing(0)
 		track_status_layout.addWidget(self.track_label)
-		track_status_layout.addWidget(self.status_label)
 		player_layout.addLayout(track_status_layout)
 
 		button_grid = QGridLayout()
@@ -413,11 +635,26 @@ class MainWindow(QMainWindow):
 
 		playlist_view = PlaylistView(playlist_service)
 		playlist_view.play_requested.connect(self.load_and_play)
-		tabs.addTab(player_widget, "再生")
-		tabs.addTab(playlist_view, "プレイリスト")
+		right_splitter.addWidget(player_widget)
+		right_splitter.addWidget(playlist_view)
+		right_splitter.setStretchFactor(0, 2)
+		right_splitter.setStretchFactor(1, 1)
+		right_splitter.setSizes([430, 350])
 
 		self.setCentralWidget(central_widget)
 		self._restore_splitter_state()
+
+	def showEvent(self, event) -> None:
+		super().showEvent(event)
+		if self._splitter_migration_pending:
+			self._splitter_migration_pending = False
+			QTimer.singleShot(100, self._move_splitter_right)
+
+	def _move_splitter_right(self) -> None:
+		sizes = self.main_splitter.sizes()
+		if len(sizes) == 2 and sizes[1] > 20:
+			self.main_splitter.setSizes([sizes[0] + 20, sizes[1] - 20])
+			self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 12)
 
 	def _restore_left_pane_settings(self) -> None:
 		header_state = self._settings.value(
@@ -432,17 +669,28 @@ class MainWindow(QMainWindow):
 			self._SPLITTER_STATE_KEY,
 			QByteArray(),
 		)
-		return (
+		restored = (
 			isinstance(splitter_state, QByteArray)
 			and not splitter_state.isEmpty()
 			and self.main_splitter.restoreState(splitter_state)
 		)
+		if restored and self._settings.value(
+			self._SPLITTER_LAYOUT_VERSION_KEY,
+			0,
+			type=int,
+		) < 2:
+			sizes = self.main_splitter.sizes()
+			if len(sizes) == 2:
+				self.main_splitter.setSizes([170, max(1, sum(sizes) - 170)])
+			self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 2)
+		return restored
 
 	def _save_left_pane_settings(self, *_args) -> None:
 		self._settings.setValue(
 			self._SPLITTER_STATE_KEY,
 			self.main_splitter.saveState(),
 		)
+		self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 12)
 		self._settings.setValue(
 			self._FILE_TREE_HEADER_STATE_KEY,
 			self.file_tree.header().saveState(),
@@ -451,6 +699,7 @@ class MainWindow(QMainWindow):
 			self._FILE_TREE_ROOT_KEY,
 			self.file_root_label.text(),
 		)
+		self._save_registered_paths()
 		self._settings.sync()
 
 	def closeEvent(self, event) -> None:
@@ -488,20 +737,28 @@ class MainWindow(QMainWindow):
 			"Audio files (*.mp3 *.wav *.flac *.m4a *.ogg);;All files (*.*)",
 		)
 		if file_paths:
+			self._registered_folders.add(Path(file_paths[0]).parent.resolve())
+			self._save_registered_folders()
+			self._sync_file_tree_roots()
 			self._set_file_tree_root(Path(file_paths[0]).parent)
-			self.load_tracks(self._tracks_from_paths(file_paths))
+			self._append_tracks(self._tracks_from_paths(file_paths))
+			self._update_file_tree_visibility()
 
 	def open_folder(self) -> None:
 		folder_path = QFileDialog.getExistingDirectory(self, "音声フォルダを選択")
 		if not folder_path:
 			return
+		self._registered_folders.add(Path(folder_path).resolve())
+		self._save_registered_folders()
+		self._sync_file_tree_roots()
 		self._set_file_tree_root(folder_path)
 		paths = (
 			path
 			for path in Path(folder_path).rglob("*")
 			if path.is_file() and path.suffix.lower() in SUPPORTED_AUDIO_SUFFIXES
 		)
-		self.load_tracks(self._tracks_from_paths(paths))
+		self._append_tracks(self._tracks_from_paths(paths))
+		self._update_file_tree_visibility()
 
 	def _load_file_from_tree(self, index: QModelIndex) -> None:
 		if self.file_system_model.isDir(index):
@@ -509,25 +766,35 @@ class MainWindow(QMainWindow):
 		path = Path(self.file_system_model.filePath(index))
 		if path.suffix.lower() not in SUPPORTED_AUDIO_SUFFIXES:
 			return
-		track = Track(track_id=str(uuid4()), path=str(path), title=path.stem)
-		self.load_tracks((track,))
+		self._select_file_from_tree(index, autoplay=True)
 
-	def _selected_audio_paths(self) -> tuple[Path, ...]:
+	def _selected_unregister_paths(self) -> tuple[Path, ...]:
 		return tuple(
 			Path(self.file_system_model.filePath(index))
 			for index in self.file_tree.selectionModel().selectedRows(0)
 			if index.isValid()
-			and not self.file_system_model.isDir(index)
-			and Path(self.file_system_model.filePath(index)).is_file()
-			and Path(self.file_system_model.filePath(index)).suffix.lower()
-			in SUPPORTED_AUDIO_SUFFIXES
+			and (
+				self.file_system_model.isDir(index)
+				or (
+					Path(self.file_system_model.filePath(index)).is_file()
+					and Path(self.file_system_model.filePath(index)).suffix.lower()
+					in SUPPORTED_AUDIO_SUFFIXES
+				)
+			)
+		)
+
+	def _selected_audio_paths(self) -> tuple[Path, ...]:
+		return tuple(
+			path
+			for path in self._selected_unregister_paths()
+			if path.is_file()
 		)
 
 	def _update_delete_button_state(self, *_args) -> None:
-		self.delete_file_button.setEnabled(bool(self._selected_audio_paths()))
+		self.delete_file_button.setEnabled(bool(self._selected_unregister_paths()))
 
 	def delete_selected_files(self) -> None:
-		selected_paths = self._selected_audio_paths()
+		selected_paths = self._selected_unregister_paths()
 		if not selected_paths:
 			return
 
@@ -535,7 +802,7 @@ class MainWindow(QMainWindow):
 		answer = QMessageBox.warning(
 			self,
 			"左ペインから登録解除",
-			f"選択した{len(selected_paths)}個のファイルを左ペインから登録解除します。\n"
+			f"選択した{len(selected_paths)}個の項目を左ペインから登録解除します。\n"
 			f"{file_list}",
 			QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
 			QMessageBox.StandardButton.No,
@@ -543,17 +810,63 @@ class MainWindow(QMainWindow):
 		if answer != QMessageBox.StandardButton.Yes:
 			return
 
-		self._hidden_file_paths.update(selected_paths)
-		self._hide_hidden_file_tree_rows()
-		self._remove_unregistered_tracks(selected_paths)
+		normalized_paths = tuple(self._normalize_path(path) for path in selected_paths)
+		removed_audio_paths = tuple(
+			path
+			for path in self._registered_paths
+			if any(path == selected or selected in path.parents for selected in normalized_paths)
+		)
+		self._hidden_file_paths.update(normalized_paths)
+		self._registered_paths.difference_update(removed_audio_paths)
+		self._registered_folders = {
+			folder
+			for folder in self._registered_folders
+			if not any(
+				folder == selected or selected in folder.parents
+				for selected in normalized_paths
+			)
+		}
+		self._sync_file_tree_roots()
+		self._remove_unregistered_tracks(removed_audio_paths)
+		self._save_registered_paths()
+		self._save_registered_folders()
+		self._update_file_tree_visibility()
+		self._hide_paths_from_file_tree(selected_paths)
 		self.file_tree.clearSelection()
 		self._update_delete_button_state()
 
-	def _hide_hidden_file_tree_rows(self, *_args) -> None:
-		for path in self._hidden_file_paths:
+	def _update_file_tree_visibility(self, loaded_path: str | None = None) -> None:
+		registered_paths = set(self._registered_paths)
+		registered_folders = set(self._registered_folders)
+		parent_index = self.file_tree.rootIndex()
+		if loaded_path:
+			loaded_index = self.file_system_model.index(loaded_path)
+			if loaded_index.isValid():
+				parent_index = loaded_index
+
+		for row in range(self.file_system_model.rowCount(parent_index)):
+			index = self.file_system_model.index(row, 0, parent_index)
+			path = self._normalize_path(self.file_system_model.filePath(index))
+			if path in self._hidden_file_paths:
+				is_visible = False
+			elif self.file_system_model.isDir(index):
+				is_visible = any(
+					registered_path == path or path in registered_path.parents
+					for registered_path in registered_paths | registered_folders
+				)
+			else:
+				is_visible = path in registered_paths
+			self.file_tree.setRowHidden(row, parent_index, not is_visible)
+
+	def _hide_paths_from_file_tree(self, paths: list[Path] | tuple[Path, ...]) -> None:
+		for path in paths:
 			index = self.file_system_model.index(str(path))
 			if index.isValid():
 				self.file_tree.setRowHidden(index.row(), index.parent(), True)
+
+	@staticmethod
+	def _normalize_path(path: str | Path) -> Path:
+		return Path(path).resolve()
 
 	def _remove_unregistered_tracks(self, unregistered_paths: list[Path]) -> None:
 		unregistered_path_set = set(unregistered_paths)
@@ -608,12 +921,209 @@ class MainWindow(QMainWindow):
 			)
 
 	def _set_file_tree_root(self, root_path: str | Path) -> None:
-		path = str(Path(root_path))
-		self.file_system_model.setRootPath(path)
-		self.file_tree.setRootIndex(self.file_system_model.index(path))
+		path_object = Path(root_path).resolve()
+		path = str(path_object)
+		source_root = path_object.anchor or path
+		self._source_file_system_model.setRootPath(source_root)
+		self._sync_file_tree_roots()
+		self.file_tree.setRootIndex(QModelIndex())
 		self.file_root_label.setText(path)
+		if path_object.anchor:
+			self._drive_roots[path_object.anchor] = path_object
+			self._save_drive_roots()
+		self._select_drive_for_path(path)
 		self._settings.setValue(self._FILE_TREE_ROOT_KEY, path)
 		self._settings.sync()
+
+	def _switch_drive(self, drive_root: str) -> None:
+		if drive_root:
+			root_path = self._drive_root_path(drive_root)
+			self._set_file_tree_root(root_path)
+
+	def _drive_root_path(self, drive_root: str) -> Path:
+		for folder in sorted(
+			self._registered_folders,
+			key=lambda value: str(value).casefold(),
+		):
+			if folder.anchor.casefold() == drive_root.casefold():
+				return folder
+		for anchor, path in self._drive_roots.items():
+			if anchor.casefold() == drive_root.casefold() and path.is_dir():
+				return path
+		for path in sorted(
+			self._registered_paths,
+			key=lambda value: str(value).casefold(),
+		):
+			if path.anchor.casefold() == drive_root.casefold():
+				return path.parent
+		return Path(drive_root)
+
+	def _load_registered_folders(self) -> set[Path]:
+		saved_paths = self._settings.value(self._REGISTERED_FOLDERS_KEY, [])
+		if isinstance(saved_paths, str):
+			saved_paths = [saved_paths]
+		return {Path(path).resolve() for path in saved_paths if str(path).strip()}
+
+	def _save_registered_folders(self) -> None:
+		self._settings.setValue(
+			self._REGISTERED_FOLDERS_KEY,
+			[
+				str(path)
+				for path in sorted(
+					self._registered_folders,
+					key=lambda value: str(value).casefold(),
+				)
+			],
+		)
+		self._settings.sync()
+
+	@staticmethod
+	def _common_root(first_path: str | Path, second_path: str | Path) -> Path:
+		common_root = Path(first_path).resolve()
+		other_path = Path(second_path).resolve()
+		while (
+			common_root != other_path
+			and common_root not in other_path.parents
+			and common_root != common_root.parent
+		):
+			common_root = common_root.parent
+		return common_root
+
+	def _load_drive_roots(self) -> dict[str, Path]:
+		self._settings.beginGroup(self._DRIVE_ROOTS_GROUP)
+		roots = {
+			key: Path(value)
+			for key in self._settings.childKeys()
+			if (value := self._settings.value(key, "", type=str)).strip()
+		}
+		self._settings.endGroup()
+		return roots
+
+	def _save_drive_roots(self) -> None:
+		self._settings.beginGroup(self._DRIVE_ROOTS_GROUP)
+		self._settings.remove("")
+		for anchor, path in self._drive_roots.items():
+			self._settings.setValue(anchor, str(path))
+		self._settings.endGroup()
+		self._settings.sync()
+
+	def _refresh_drive_selector(self) -> None:
+		drive_roots = sorted(
+			{
+				path.anchor
+				for path in self._registered_paths
+				if path.anchor
+			},
+			key=str.casefold,
+		)
+		current_root = self.drive_selector.currentText()
+		self.drive_selector.blockSignals(True)
+		self.drive_selector.clear()
+		self.drive_selector.addItems(drive_roots)
+		self.drive_selector.blockSignals(False)
+		self.drive_selector.setVisible(len(drive_roots) > 1)
+		if current_root in drive_roots:
+			self.drive_selector.setCurrentText(current_root)
+		elif drive_roots:
+			self._select_drive_for_path(self.file_root_label.text())
+
+	def _select_drive_for_path(self, path: str | Path) -> None:
+		drive_root = Path(path).anchor
+		if drive_root and self.drive_selector.findText(drive_root) >= 0:
+			self.drive_selector.blockSignals(True)
+			self.drive_selector.setCurrentText(drive_root)
+			self.drive_selector.blockSignals(False)
+
+	def _save_registered_paths(self) -> None:
+		self._settings.setValue(
+			self._REGISTERED_PATHS_KEY,
+			[
+				str(path)
+				for path in sorted(
+					self._registered_paths,
+					key=lambda value: str(value).casefold(),
+				)
+			],
+		)
+
+	def _restore_registered_tracks(self) -> None:
+		saved_paths = self._settings.value(self._REGISTERED_PATHS_KEY, [])
+		if isinstance(saved_paths, str):
+			saved_paths = [saved_paths]
+		self._registered_paths = {
+			self._normalize_path(path) for path in saved_paths if str(path).strip()
+		}
+		existing_paths = {
+			path
+			for path in self._registered_paths
+			if path.is_file() and path.suffix.lower() in SUPPORTED_AUDIO_SUFFIXES
+		}
+		self._registered_paths = existing_paths
+		self._registered_folders = {
+			folder
+			for folder in self._registered_folders
+			if any(folder == path or folder in path.parents for path in existing_paths)
+		}
+		self._sync_file_tree_roots()
+		self._save_registered_paths()
+		self._save_registered_folders()
+		self._settings.remove(self._FILE_TREE_ROOT_KEY)
+		if self._registered_folders:
+			self._set_file_tree_root(next(iter(self._registered_folders)))
+		self._refresh_drive_selector()
+		existing_paths = tuple(existing_paths)
+		if not existing_paths:
+			return
+
+		self._queue = self._tracks_from_paths(existing_paths)
+		self._queue_index = 0
+		self._update_file_tree_visibility()
+
+	def _register_tracks(self, tracks: tuple[Track, ...]) -> None:
+		self._registered_paths.update(self._normalize_path(track.path) for track in tracks)
+		self._sync_file_tree_roots()
+		self._refresh_drive_selector()
+		self._save_registered_paths()
+
+	def _sync_file_tree_roots(self) -> None:
+		expanded_paths = self._expanded_file_tree_paths()
+		file_roots = {
+			path.parent
+			for path in self._registered_paths
+			if path.is_file()
+		}
+		self.file_system_model.set_root_paths(self._registered_folders | file_roots)
+		if expanded_paths and hasattr(self, "file_tree"):
+			QTimer.singleShot(
+				0,
+				lambda: self._restore_expanded_file_tree_paths(expanded_paths),
+			)
+
+	def _expanded_file_tree_paths(self) -> set[Path]:
+		if not hasattr(self, "file_tree"):
+			return set()
+
+		expanded_paths: set[Path] = set()
+
+		def collect(parent: QModelIndex = QModelIndex()) -> None:
+			for row in range(self.file_system_model.rowCount(parent)):
+				index = self.file_system_model.index(row, 0, parent)
+				if not index.isValid() or not self.file_system_model.isDir(index):
+					continue
+				if self.file_tree.isExpanded(index):
+					expanded_paths.add(
+						Path(self.file_system_model.filePath(index)).resolve()
+					)
+					collect(index)
+
+		collect()
+		return expanded_paths
+
+	def _restore_expanded_file_tree_paths(self, paths: set[Path]) -> None:
+		for path in paths:
+			index = self.file_system_model.index(str(path))
+			if index.isValid():
+				self.file_tree.expand(index)
 
 	def _tracks_from_paths(
 		self,
@@ -635,8 +1145,28 @@ class MainWindow(QMainWindow):
 			return
 		self._queue = tracks
 		self._queue_index = index
-		self._expand_file_tree_for_tracks()
+		self._register_tracks(tracks)
+		self._update_file_tree_visibility()
 		self._load_current_track(autoplay=True)
+
+	def _append_tracks(self, tracks: tuple[Track, ...]) -> None:
+		if not tracks:
+			return
+
+		existing_paths = {Path(track.path) for track in self._queue}
+		new_tracks = tuple(
+			track for track in tracks if Path(track.path) not in existing_paths
+		)
+		if not new_tracks:
+			return
+
+		if not self._queue:
+			self.load_tracks(new_tracks)
+			return
+
+		self._queue = self._queue + new_tracks
+		self._register_tracks(new_tracks)
+		self._update_file_tree_visibility()
 
 	def _expand_file_tree_for_tracks(self) -> None:
 		for track in self._queue:
@@ -652,8 +1182,57 @@ class MainWindow(QMainWindow):
 			self.file_tree.setCurrentIndex(index)
 			self.file_tree.scrollTo(index)
 
+	def _update_file_tree_path(
+		self,
+		current: QModelIndex,
+		_previous: QModelIndex,
+	) -> None:
+		if not current.isValid():
+			return
+		selected_path = Path(self.file_system_model.filePath(current))
+		folder_path = (
+			selected_path if self.file_system_model.isDir(current) else selected_path.parent
+		)
+		self.file_root_label.setText(str(folder_path))
+		if (
+			self.file_system_model.isDir(current)
+			or selected_path.suffix.lower() not in SUPPORTED_AUDIO_SUFFIXES
+		):
+			return
+		self._select_file_from_tree(current, autoplay=False)
+
+	def _select_file_from_tree(self, index: QModelIndex, autoplay: bool) -> None:
+		path = self._normalize_path(self.file_system_model.filePath(index))
+		track_index = next(
+			(
+				queue_index
+				for queue_index, track in enumerate(self._queue)
+				if self._normalize_path(track.path) == path
+			),
+			None,
+		)
+		if track_index is None:
+			track = Track(
+				track_id=str(uuid4()),
+				path=str(path),
+				title=path.stem,
+			)
+			self._queue = self._queue + (track,)
+			self._register_tracks((track,))
+			track_index = len(self._queue) - 1
+		elif (
+			self._current_track is not None
+			and self._normalize_path(self._current_track.path) == path
+			and not autoplay
+		):
+			return
+
+		self._queue_index = track_index
+		self._load_current_track(autoplay=autoplay)
+
 	def _load_current_track(self, autoplay: bool) -> None:
 		self._current_track = self._queue[self._queue_index]
+		self.file_system_model.set_playing_path(self._current_track.path)
 		self._update_file_tree_selection()
 		self.playback_service.load(self._current_track)
 		self.track_label.setText(self._current_track.title)
