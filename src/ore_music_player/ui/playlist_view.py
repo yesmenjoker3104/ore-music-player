@@ -115,8 +115,10 @@ class TrackTableWidget(QTableWidget):
 		if available_width <= 0:
 			return
 		name_width = int(available_width * self._NAME_COLUMN_RATIO)
-		header.resizeSection(0, name_width)
-		header.resizeSection(1, available_width - name_width)
+		if header.sectionSize(0) != name_width:
+			header.resizeSection(0, name_width)
+		if header.sectionSize(1) != available_width - name_width:
+			header.resizeSection(1, available_width - name_width)
 
 
 class PlaylistView(QWidget):

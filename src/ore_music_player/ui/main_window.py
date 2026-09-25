@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 import shutil
 import sys
@@ -12,6 +13,7 @@ from PySide6.QtCore import (
 	QAbstractProxyModel,
 	QByteArray,
 	QDir,
+	QItemSelectionModel,
 	QModelIndex,
 	QPointF,
 	QRectF,
@@ -64,6 +66,8 @@ from ore_music_player.domain.models import (
 	Track,
 )
 from ore_music_player.infrastructure.audio.metadata import read_duration_seconds
+from ore_music_player.infrastructure.playback_trace import trace_playback_event
+from ore_music_player.infrastructure.settings import load_settings
 from ore_music_player.infrastructure.update_service import (
 	ReleaseInfo,
 	download_release,
@@ -205,9 +209,15 @@ class PositionSlider(QSlider):
 
 
 class AudioFileSystemModel(QFileSystemModel):
-	def __init__(self, parent: QWidget | None = None) -> None:
+	duration_loaded = Signal(str, object)
+
+	def __init__(
+		self,
+		parent: QWidget | None = None,
+		duration_cache: dict[str, float | None] | None = None,
+	) -> None:
 		super().__init__(parent)
-		self._duration_cache: dict[str, float | None] = {}
+		self._duration_cache = dict(duration_cache or {})
 
 	def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
 		return 2
@@ -230,14 +240,18 @@ class AudioFileSystemModel(QFileSystemModel):
 		if index.column() == 1 and role == Qt.ItemDataRole.DisplayRole:
 			if self.isDir(index):
 				return ""
-			path = self.filePath(index)
+			path = str(Path(self.filePath(index)).absolute())
 			if path not in self._duration_cache:
-				self._duration_cache[path] = read_duration_seconds(path)
-			return format_duration(self._duration_cache[path])
+				duration = read_duration_seconds(path)
+				self._duration_cache[path] = duration
+				self.duration_loaded.emit(path, duration)
+			return format_duration(self._duration_cache.get(path))
 		return super().data(index, role)
 
-	def set_duration(self, path: str, duration: float) -> None:
-		self._duration_cache[path] = duration
+	def set_duration(self, path: str, duration: float | None) -> None:
+		normalized_path = str(Path(path).absolute())
+		self._duration_cache[normalized_path] = duration
+		self.duration_loaded.emit(normalized_path, duration)
 		index = self.index(path)
 		if index.isValid():
 			duration_index = index.siblingAtColumn(1)
@@ -260,7 +274,7 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 
 	def set_root_paths(self, paths: set[Path]) -> None:
 		self.beginResetModel()
-		normalized_paths = {Path(path).resolve() for path in paths}
+		normalized_paths = {Path(path).absolute() for path in paths}
 		self._root_paths = tuple(
 			sorted(
 				(
@@ -279,8 +293,14 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 		self._next_path_id = 1
 		self.endResetModel()
 
-	def _create_path_index(self, row: int, column: int, path: str) -> QModelIndex:
-		path = str(Path(path).resolve())
+	def _create_path_index(
+		self,
+		row: int,
+		column: int,
+		path: str,
+		source_index: QModelIndex,
+	) -> QModelIndex:
+		path = str(Path(path).absolute())
 		path_id = self._path_ids.get(path)
 		if path_id is None:
 			path_id = self._next_path_id
@@ -317,6 +337,7 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 			row,
 			column,
 			self.sourceModel().filePath(source_index),
+			source_index,
 		)
 
 	def parent(self, child: QModelIndex) -> QModelIndex:
@@ -340,7 +361,7 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 	def mapFromSource(self, source_index: QModelIndex) -> QModelIndex:
 		if not source_index.isValid():
 			return QModelIndex()
-		item_path = Path(self.sourceModel().filePath(source_index)).resolve()
+		item_path = Path(self.sourceModel().filePath(source_index)).absolute()
 		root = next(
 			(
 				root_path
@@ -356,31 +377,33 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 				self._root_paths.index(root),
 				source_index.column(),
 				str(item_path),
+				source_index,
 			)
 		return self._create_path_index(
 			source_index.row(),
 			source_index.column(),
 			str(item_path),
+			source_index,
 		)
 
 	def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
 		if role == Qt.ItemDataRole.BackgroundRole:
 			path = self.filePath(index)
-			if self._playing_path and Path(path).resolve() == Path(
+			if self._playing_path and Path(path).absolute() == Path(
 				self._playing_path
-			).resolve():
+			).absolute():
 				return QColor("#b8d8e8")
 		if role == Qt.ItemDataRole.ForegroundRole:
 			path = self.filePath(index)
-			if self._playing_path and Path(path).resolve() == Path(
+			if self._playing_path and Path(path).absolute() == Path(
 				self._playing_path
-			).resolve():
+			).absolute():
 				return QColor("#102a43")
 		return self.sourceModel().data(self.mapToSource(index), role)
 
 	def set_playing_path(self, path: str | Path | None) -> None:
 		previous_path = self._playing_path
-		self._playing_path = str(Path(path).resolve()) if path else None
+		self._playing_path = str(Path(path).absolute()) if path else None
 		for changed_path in (previous_path, self._playing_path):
 			if not changed_path:
 				continue
@@ -423,7 +446,7 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 	def index_for_path(self, path: str | Path) -> QModelIndex:
 		return self.mapFromSource(self.sourceModel().index(str(path)))
 
-	def set_duration(self, path: str, duration: float) -> None:
+	def set_duration(self, path: str, duration: float | None) -> None:
 		self.sourceModel().set_duration(path, duration)
 
 	def setRootPath(self, path: str) -> QModelIndex:
@@ -462,8 +485,6 @@ class UpdateWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-	_SETTINGS_ORGANIZATION = "OreMusicPlayer"
-	_SETTINGS_APPLICATION = "OreMusicPlayer"
 	_SPLITTER_STATE_KEY = "leftPane/splitterState"
 	_RIGHT_SPLITTER_STATE_KEY = "rightPane/splitterState"
 	_SPLITTER_LAYOUT_VERSION_KEY = "leftPane/splitterLayoutVersion"
@@ -472,6 +493,7 @@ class MainWindow(QMainWindow):
 	_FILE_TREE_ROOT_KEY = "leftPane/rootPath"
 	_REGISTERED_PATHS_KEY = "leftPane/registeredPaths"
 	_REGISTERED_FOLDERS_KEY = "leftPane/registeredFolders"
+	_DURATION_CACHE_KEY = "metadata/durations"
 	_DRIVE_ROOTS_GROUP = "leftPane/driveRoots"
 	_VOLUME_KEY = "playback/volume"
 	_RECENT_TRACKS_KEY = "playback/recentTracks"
@@ -486,13 +508,13 @@ class MainWindow(QMainWindow):
 		self,
 		playback_service: PlaybackService,
 		playlist_service: PlaylistService,
+		settings_path: str | Path | None = None,
 	) -> None:
 		super().__init__()
 		self.playback_service = playback_service
 		self.playlist_service = playlist_service
-		self._settings = QSettings(
-			self._SETTINGS_ORGANIZATION,
-			self._SETTINGS_APPLICATION,
+		self._settings = load_settings(
+			settings_path or Path.cwd() / "data" / "settings.ini"
 		)
 		self._current_track: Track | None = None
 		self._playback_playlist_id: str | None = None
@@ -503,12 +525,17 @@ class MainWindow(QMainWindow):
 		self._is_seeking = False
 		self._is_playing = False
 		self._duration_seconds = 0.0
+		self._pending_restore_position: float | None = None
 		self._shortcuts: list[QShortcut] = []
 		self._update_worker: UpdateWorker | None = None
 		self._layout_restored_after_show = False
+		self._settings_save_timer = QTimer(self)
+		self._settings_save_timer.setSingleShot(True)
+		self._settings_save_timer.timeout.connect(self._save_left_pane_settings)
 		self._hidden_file_paths: set[Path] = set()
 		self._registered_paths: set[Path] = set()
 		self._registered_folders: set[Path] = self._load_registered_folders()
+		self._duration_cache_records = self._load_duration_cache_records()
 		self._drive_roots = self._load_drive_roots()
 		self._recent_paths = self._load_recent_paths()
 		self._file_tree_filter = ""
@@ -551,7 +578,7 @@ class MainWindow(QMainWindow):
 		layout.setContentsMargins(0, 0, 0, 0)
 		splitter = QSplitter(Qt.Orientation.Horizontal)
 		self.main_splitter = splitter
-		splitter.splitterMoved.connect(self._save_left_pane_settings)
+		splitter.splitterMoved.connect(self._schedule_left_pane_settings_save)
 		layout.addWidget(splitter)
 
 		file_panel = QWidget()
@@ -576,7 +603,13 @@ class MainWindow(QMainWindow):
 		self.file_filter_edit.setClearButtonEnabled(True)
 		self.file_filter_edit.textChanged.connect(self._filter_file_tree)
 		file_layout.addWidget(self.file_filter_edit)
-		self._source_file_system_model = AudioFileSystemModel(self)
+		self._source_file_system_model = AudioFileSystemModel(
+			self,
+			duration_cache=self._valid_duration_cache(),
+		)
+		self._source_file_system_model.duration_loaded.connect(
+			self._remember_duration
+		)
 		self._source_file_system_model.setFilter(
 			QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot | QDir.Filter.Dirs
 		)
@@ -610,6 +643,7 @@ class MainWindow(QMainWindow):
 		)
 		self.file_tree.setDragEnabled(True)
 		self.file_tree.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+		self.file_tree.setUniformRowHeights(True)
 		self.file_tree.setRootIndex(QModelIndex())
 		self.file_tree.header().setStretchLastSection(False)
 		self.file_tree.setColumnWidth(0, 250)
@@ -635,7 +669,7 @@ class MainWindow(QMainWindow):
 
 		right_splitter = QSplitter(Qt.Orientation.Vertical)
 		self.right_splitter = right_splitter
-		right_splitter.splitterMoved.connect(self._save_left_pane_settings)
+		right_splitter.splitterMoved.connect(self._schedule_left_pane_settings_save)
 		splitter.addWidget(right_splitter)
 		splitter.setStretchFactor(0, 1)
 		splitter.setStretchFactor(1, 2)
@@ -916,7 +950,11 @@ class MainWindow(QMainWindow):
 			self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 2)
 		return restored
 
+	def _schedule_left_pane_settings_save(self, *_args) -> None:
+		self._settings_save_timer.start(150)
+
 	def _save_left_pane_settings(self, *_args) -> None:
+		self._settings_save_timer.stop()
 		self._settings.setValue(
 			self._SPLITTER_STATE_KEY,
 			self.main_splitter.saveState(),
@@ -947,7 +985,11 @@ class MainWindow(QMainWindow):
 			)
 			self._settings.setValue(
 				self._LAST_POSITION_KEY,
-				self.playback_service.position_seconds,
+				(
+					self._pending_restore_position
+					if self._pending_restore_position is not None
+					else self.playback_service.position_seconds
+				),
 			)
 			self._settings.setValue(self._LAST_SPEED_KEY, str(state.speed))
 			self._save_optional_setting(
@@ -1071,7 +1113,7 @@ class MainWindow(QMainWindow):
 			self.recent_menu.addAction(action)
 
 	def _load_recent_paths(self) -> list[Path]:
-		saved_paths = self._settings.value(self._RECENT_TRACKS_KEY, [])
+		saved_paths = self._settings.value(self._RECENT_TRACKS_KEY, []) or []
 		if isinstance(saved_paths, str):
 			saved_paths = [saved_paths]
 		return [
@@ -1159,7 +1201,7 @@ class MainWindow(QMainWindow):
 			self._save_registered_folders()
 			self._sync_file_tree_roots()
 			self._set_file_tree_root(Path(file_paths[0]).parent)
-			self._append_tracks(self._tracks_from_paths(file_paths))
+			self._append_tracks(self._tracks_from_paths(file_paths, read_durations=False))
 			self._update_file_tree_visibility()
 
 	def open_folder(self) -> None:
@@ -1175,16 +1217,23 @@ class MainWindow(QMainWindow):
 			for path in Path(folder_path).rglob("*")
 			if path.is_file() and path.suffix.lower() in SUPPORTED_AUDIO_SUFFIXES
 		)
-		self._append_tracks(self._tracks_from_paths(paths))
+		self._append_tracks(self._tracks_from_paths(paths, read_durations=False))
 		self._update_file_tree_visibility()
 
 	def _load_file_from_tree(self, index: QModelIndex) -> None:
-		if self.file_system_model.isDir(index):
+		trace_playback_event(
+			"tree_double_clicked",
+			index_valid=index.isValid(),
+			index_path=(self.file_system_model.filePath(index) if index.isValid() else None),
+			current_path=(self._current_track.path if self._current_track else None),
+			queue_index=self._queue_index,
+		)
+		if not index.isValid() or self.file_system_model.isDir(index):
 			return
 		path = Path(self.file_system_model.filePath(index))
 		if path.suffix.lower() not in SUPPORTED_AUDIO_SUFFIXES:
 			return
-		self._select_file_from_tree(index, autoplay=True)
+		self._select_file_path(path, autoplay=True)
 
 	def _selected_unregister_paths(self) -> tuple[Path, ...]:
 		return tuple(
@@ -1308,7 +1357,7 @@ class MainWindow(QMainWindow):
 
 	@staticmethod
 	def _normalize_path(path: str | Path) -> Path:
-		return Path(path).resolve()
+		return Path(path).absolute()
 
 	def _remove_unregistered_tracks(self, unregistered_paths: list[Path]) -> None:
 		unregistered_path_set = set(unregistered_paths)
@@ -1404,7 +1453,7 @@ class MainWindow(QMainWindow):
 		return Path(drive_root)
 
 	def _load_registered_folders(self) -> set[Path]:
-		saved_paths = self._settings.value(self._REGISTERED_FOLDERS_KEY, [])
+		saved_paths = self._settings.value(self._REGISTERED_FOLDERS_KEY, []) or []
 		if isinstance(saved_paths, str):
 			saved_paths = [saved_paths]
 		return {Path(path).resolve() for path in saved_paths if str(path).strip()}
@@ -1479,6 +1528,56 @@ class MainWindow(QMainWindow):
 			self.drive_selector.setCurrentText(drive_root)
 			self.drive_selector.blockSignals(False)
 
+	def _load_duration_cache_records(self) -> dict[str, tuple[int, float | None]]:
+		raw_value = self._settings.value(self._DURATION_CACHE_KEY, "", type=str)
+		if not raw_value:
+			return {}
+		try:
+			raw_records = json.loads(raw_value)
+		except (TypeError, ValueError):
+			return {}
+		if not isinstance(raw_records, dict):
+			return {}
+
+		records: dict[str, tuple[int, float | None]] = {}
+		for path, record in raw_records.items():
+			if not isinstance(path, str) or not isinstance(record, list):
+				continue
+			if len(record) != 2 or not isinstance(record[0], int):
+				continue
+			duration = record[1]
+			if duration is not None and not isinstance(duration, (int, float)):
+				continue
+			records[path] = (record[0], duration)
+		return records
+
+	def _valid_duration_cache(self) -> dict[str, float | None]:
+		cache: dict[str, float | None] = {}
+		for path, (modified_ns, duration) in self._duration_cache_records.items():
+			try:
+				if Path(path).stat().st_mtime_ns == modified_ns:
+					cache[path] = duration
+			except OSError:
+				continue
+		return cache
+
+	def _remember_duration(self, path: str, duration: object) -> None:
+		try:
+			modified_ns = Path(path).stat().st_mtime_ns
+		except OSError:
+			return
+		if duration is not None and not isinstance(duration, (int, float)):
+			return
+		self._duration_cache_records[path] = (modified_ns, duration)
+		serialized = {
+			cached_path: [record[0], record[1]]
+			for cached_path, record in self._duration_cache_records.items()
+		}
+		self._settings.setValue(
+			self._DURATION_CACHE_KEY,
+			json.dumps(serialized),
+		)
+
 	def _save_registered_paths(self) -> None:
 		self._settings.setValue(
 			self._REGISTERED_PATHS_KEY,
@@ -1492,7 +1591,7 @@ class MainWindow(QMainWindow):
 		)
 
 	def _restore_registered_tracks(self) -> None:
-		saved_paths = self._settings.value(self._REGISTERED_PATHS_KEY, [])
+		saved_paths = self._settings.value(self._REGISTERED_PATHS_KEY, []) or []
 		if isinstance(saved_paths, str):
 			saved_paths = [saved_paths]
 		playlist_paths = [
@@ -1530,7 +1629,7 @@ class MainWindow(QMainWindow):
 		if not existing_paths:
 			return
 
-		self._queue = self._tracks_from_paths(existing_paths)
+		self._queue = self._tracks_from_paths(existing_paths, read_durations=False)
 		self._queue_index = 0
 		self._update_file_tree_visibility()
 
@@ -1551,7 +1650,16 @@ class MainWindow(QMainWindow):
 			return
 
 		self._queue_index = queue_index
-		self._load_current_track(autoplay=False)
+		self._current_track = self._queue[self._queue_index]
+		self._record_recent_path(self._current_track.path)
+		self.file_system_model.set_playing_path(self._current_track.path)
+		self.playlist_view.set_playing_track(
+			self._playback_playlist_id,
+			self._current_track.track_id,
+		)
+		self._update_file_tree_selection()
+		self.track_label.setText(self._current_track.title)
+		self._set_playback_status("読み込み待ち", is_playing=False)
 
 		saved_speed = self._settings.value(
 			self._LAST_SPEED_KEY,
@@ -1572,7 +1680,7 @@ class MainWindow(QMainWindow):
 			type=float,
 		)
 		if saved_position is not None:
-			self._try_seek(max(0.0, saved_position))
+			self._pending_restore_position = max(0.0, saved_position)
 
 		saved_a = self._settings.value(self._LAST_A_POINT_KEY, None, type=float)
 		saved_b = self._settings.value(self._LAST_B_POINT_KEY, None, type=float)
@@ -1593,6 +1701,12 @@ class MainWindow(QMainWindow):
 
 	def _register_tracks(self, tracks: tuple[Track, ...]) -> None:
 		self._registered_paths.update(self._normalize_path(track.path) for track in tracks)
+		for track in tracks:
+			if track.duration_seconds is not None:
+				self.file_system_model.set_duration(
+					track.path,
+					track.duration_seconds,
+				)
 		self._sync_file_tree_roots()
 		self._refresh_drive_selector()
 		self._save_registered_paths()
@@ -1640,6 +1754,7 @@ class MainWindow(QMainWindow):
 	def _tracks_from_paths(
 		self,
 		paths: tuple[str | Path, ...] | list[str] | set[Path],
+		read_durations: bool = True,
 	) -> tuple[Track, ...]:
 		sorted_paths = sorted(paths, key=lambda path: str(path).casefold())
 		return tuple(
@@ -1647,7 +1762,9 @@ class MainWindow(QMainWindow):
 				track_id=str(uuid4()),
 				path=str(path),
 				title=Path(path).stem,
-				duration_seconds=read_duration_seconds(path),
+				duration_seconds=read_duration_seconds(path)
+				if read_durations
+				else None,
 			)
 			for path in sorted_paths
 		)
@@ -1697,7 +1814,17 @@ class MainWindow(QMainWindow):
 			return
 		index = self.file_system_model.index(self._current_track.path)
 		if index.isValid():
-			self.file_tree.setCurrentIndex(index)
+			selection_model = self.file_tree.selectionModel()
+			selection_model.clearSelection()
+			selection_model.select(
+				index,
+				QItemSelectionModel.SelectionFlag.ClearAndSelect
+				| QItemSelectionModel.SelectionFlag.Rows,
+			)
+			selection_model.setCurrentIndex(
+				index,
+				QItemSelectionModel.SelectionFlag.NoUpdate,
+			)
 			self.file_tree.scrollTo(index)
 
 	def _update_file_tree_path(
@@ -1708,6 +1835,13 @@ class MainWindow(QMainWindow):
 		if not current.isValid():
 			return
 		selected_path = Path(self.file_system_model.filePath(current))
+		trace_playback_event(
+			"tree_current_changed",
+			path=str(selected_path),
+			is_dir=self.file_system_model.isDir(current),
+			current_path=(self._current_track.path if self._current_track else None),
+			queue_index=self._queue_index,
+		)
 		folder_path = (
 			selected_path if self.file_system_model.isDir(current) else selected_path.parent
 		)
@@ -1717,10 +1851,27 @@ class MainWindow(QMainWindow):
 			or selected_path.suffix.lower() not in SUPPORTED_AUDIO_SUFFIXES
 		):
 			return
-		self._select_file_from_tree(current, autoplay=False)
 
 	def _select_file_from_tree(self, index: QModelIndex, autoplay: bool) -> None:
 		path = self._normalize_path(self.file_system_model.filePath(index))
+		self._select_file_path(path, autoplay)
+
+	def _select_file_path(self, path: str | Path, autoplay: bool) -> None:
+		path = self._normalize_path(path)
+		trace_playback_event(
+			"select_file_path",
+			path=str(path),
+			autoplay=autoplay,
+			current_path=(self._current_track.path if self._current_track else None),
+			queue_index=self._queue_index,
+		)
+		if (
+			autoplay
+			and self._is_playing
+			and self._current_track is not None
+			and self._normalize_path(self._current_track.path) == path
+		):
+			return
 		track_index = next(
 			(
 				queue_index
@@ -1738,7 +1889,23 @@ class MainWindow(QMainWindow):
 			self._queue = self._queue + (track,)
 			self._register_tracks((track,))
 			track_index = len(self._queue) - 1
-		elif (
+		else:
+			track = self._queue[track_index]
+			if track.duration_seconds is None:
+				track = replace(
+					track,
+					duration_seconds=read_duration_seconds(track.path),
+				)
+				self._queue = (
+					*self._queue[:track_index],
+					track,
+					*self._queue[track_index + 1 :],
+				)
+				self.file_system_model.set_duration(
+					track.path,
+					track.duration_seconds,
+				)
+		if (
 			self._current_track is not None
 			and self._normalize_path(self._current_track.path) == path
 			and not autoplay
@@ -1751,6 +1918,13 @@ class MainWindow(QMainWindow):
 
 	def _load_current_track(self, autoplay: bool) -> None:
 		self._current_track = self._queue[self._queue_index]
+		trace_playback_event(
+			"load_current_track",
+			path=self._current_track.path,
+			autoplay=autoplay,
+			queue_index=self._queue_index,
+			track_id=self._current_track.track_id,
+		)
 		self._record_recent_path(self._current_track.path)
 		self.file_system_model.set_playing_path(self._current_track.path)
 		self.playlist_view.set_playing_track(
@@ -1828,8 +2002,40 @@ class MainWindow(QMainWindow):
 			self.play()
 
 	def play(self) -> None:
+		trace_playback_event(
+			"ui_play_requested",
+			selected_paths=[
+				self.file_system_model.filePath(index)
+				for index in self.file_tree.selectionModel().selectedRows(0)
+			],
+			current_path=(self._current_track.path if self._current_track else None),
+			queue_index=self._queue_index,
+		)
+		selected_rows = self.file_tree.selectionModel().selectedRows(0)
+		if selected_rows:
+			selected_path = Path(self.file_system_model.filePath(selected_rows[0]))
+			if (
+				selected_path.suffix.lower() in SUPPORTED_AUDIO_SUFFIXES
+				and (
+					self._current_track is None
+					or self._normalize_path(self._current_track.path)
+					!= self._normalize_path(selected_path)
+				)
+			):
+				self._select_file_path(selected_path, autoplay=False)
 		if self._current_track is None:
 			return
+		backend_track = getattr(self.playback_service.backend, "current_track", None)
+		if (
+			backend_track is None
+			or self._normalize_path(backend_track.path)
+			!= self._normalize_path(self._current_track.path)
+		):
+			restore_position = self._pending_restore_position
+			self._load_current_track(autoplay=False)
+			if restore_position is not None:
+				self.playback_service.seek(restore_position)
+			self._pending_restore_position = None
 		self.playback_service.play()
 		self._set_playback_status("再生中", is_playing=True)
 
