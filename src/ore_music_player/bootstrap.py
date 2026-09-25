@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -45,16 +46,24 @@ class ApplicationComponents:
 
 
 def _configure_mpv_runtime(project_root: Path) -> Any:
-    mpv_directory = project_root / "vendor" / "mpv"
-
-    if not mpv_directory.is_dir():
-        raise FileNotFoundError(
-            f"mpvランタイムの配置先が見つかりません: {mpv_directory}"
-        )
-
     dll_names = ("libmpv-2.dll", "mpv-2.dll", "mpv-1.dll")
-    if not any((mpv_directory / name).is_file() for name in dll_names):
-        raise FileNotFoundError(f"mpv共有DLLが見つかりません: {mpv_directory}")
+    mpv_directories = [project_root / "vendor" / "mpv"]
+    if getattr(sys, "frozen", False):
+        meipass_directory = Path(getattr(sys, "_MEIPASS", project_root))
+        mpv_directories.insert(0, meipass_directory / "vendor" / "mpv")
+    mpv_directory = next(
+        (
+            directory
+            for directory in mpv_directories
+            if directory.is_dir()
+            and any((directory / name).is_file() for name in dll_names)
+        ),
+        None,
+    )
+    if mpv_directory is None:
+        raise FileNotFoundError(
+            f"mpv共有DLLが見つかりません: {', '.join(str(path) for path in mpv_directories)}"
+        )
 
     os.environ["PATH"] = str(mpv_directory) + os.pathsep + os.environ.get("PATH", "")
 

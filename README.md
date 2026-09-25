@@ -59,6 +59,35 @@ python -m pytest -q
 python -m ruff check src tests
 ```
 
+## Windows向けExeのビルド
+
+PyInstallerの`onedir`形式で、mpvランタイムを含むZIPを作成できます。先に、開発用mpvアーカイブから共有DLLと依存DLLを`vendor/mpv/`へ配置してください。`libmpv-2.dll`、`mpv-2.dll`、または`mpv-1.dll`のいずれかが必要です。
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+.\build.ps1
+```
+
+成功すると`dist\ore-music-player-windows-x64.zip`が作成されます。ZIPを展開した後は、フォルダー内の`ore-music-player.exe`を起動してください。`onedir`形式では、EXE単体ではなくフォルダー全体を配布します。
+
+GitHub Actionsは`v`で始まるタグをpushすると起動し、テスト、Exe化、GitHub ReleaseへのZIP添付まで行います。
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Exe版では、ファイルメニューの「更新を確認」からGitHub Releaseの最新版を確認できます。新しいバージョンがある場合は、ZIPをダウンロードしてアプリを再起動し、プレイリストなどの`data`を引き継いで更新します。開発版を`python -m ore_music_player`で起動している場合、更新確認は利用できません。
+
+次のReleaseを作るときは、`src/ore_music_player/version.py`と`pyproject.toml`のバージョンを同じ値へ変更してから、同じ値の`v`タグをpushしてください。
+
+```powershell
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+mpvランタイムはライセンスとサイズの都合でこのリポジトリには含めていません。GitHub Actionsでビルドする場合は、CIが参照できる方法で`vendor/mpv/`を用意してください。個人用リポジトリなら管理対象に追加する方法もありますが、mpvの配布条件を確認してから行ってください。
+
 ### Windows の mpv セットアップ
 
 再生バックエンドは `python-mpv` を使用します。`python-mpv` は Python から

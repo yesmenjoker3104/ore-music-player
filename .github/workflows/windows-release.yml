@@ -1,0 +1,65 @@
+name: Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: python -m pip install -e ".[dev,build]"
+
+      - name: Run tests
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+
+      - name: Run lint
+        shell: pwsh
+        run: python -m ruff check src tests
+
+      - name: Check mpv runtime
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem vendor\mpv -Filter "*.dll" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @("libmpv-2.dll", "mpv-2.dll", "mpv-1.dll") } |
+            Select-Object -First 1
+          if ($null -eq $dll) {
+            throw "vendor/mpv is missing a libmpv DLL. Add the licensed mpv runtime before building."
+          }
+
+      - name: Build Windows package
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ore-music-player-windows-x64
+          path: dist/ore-music-player-windows-x64.zip
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ore-music-player-windows-x64.zip
+          generate_release_notes: true

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ore-music-player"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "A touch-friendly music practice player"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -18,6 +18,9 @@ dependencies = [
 dev = [
     "pytest>=8.3,<9",
     "ruff>=0.9,<1",
+]
+build = [
+    "pyinstaller>=6.10,<7",
 ]
 
 [tool.setuptools]
