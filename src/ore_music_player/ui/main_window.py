@@ -1127,6 +1127,9 @@ class MainWindow(QMainWindow):
 	def _create_shortcuts(self) -> None:
 		shortcut_handlers = (
 			("Space", self.toggle_play_pause),
+			("A", self.set_a),
+			("B", self.set_b),
+			("S", self.toggle_loop),
 			("Left", self.seek_backward),
 			("Right", self.seek_forward),
 			("Ctrl+Left", self.previous_track),
