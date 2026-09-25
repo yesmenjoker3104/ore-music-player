@@ -1,10 +1,16 @@
+import urllib.error
+import urllib.response
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZipFile
 
 import pytest
 
 from ore_music_player.infrastructure.update_service import (
+    GITHUB_API_URL,
     _version_key,
+    fetch_latest_release,
     is_newer_version,
     prepare_update,
 )
@@ -26,6 +32,12 @@ def test_prepare_update_extracts_application_archive(tmp_path: Path) -> None:
 
     assert staged == tmp_path / "staged" / "ore-music-player"
     assert (staged / "ore-music-player.exe").read_bytes() == b"exe"
+
+
+def test_fetch_latest_release_returns_none_when_no_releases_exist() -> None:
+    error = urllib.error.HTTPError(GITHUB_API_URL, 404, "Not Found", {}, BytesIO())
+    with patch("urllib.request.urlopen", side_effect=error):
+        assert fetch_latest_release() is None
 
 
 def test_prepare_update_rejects_archive_without_executable(tmp_path: Path) -> None:
