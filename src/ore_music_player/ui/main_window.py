@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import random
 from dataclasses import replace
+from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,14 +17,25 @@ from PySide6.QtCore import (
 	Qt,
 	QTimer,
 )
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPolygonF
+from PySide6.QtGui import (
+	QAction,
+	QColor,
+	QIcon,
+	QKeySequence,
+	QPainter,
+	QPen,
+	QPolygonF,
+	QShortcut,
+)
 from PySide6.QtWidgets import (
 	QAbstractItemView,
 	QComboBox,
 	QFileDialog,
 	QFileSystemModel,
 	QGridLayout,
+	QHBoxLayout,
 	QLabel,
+	QLineEdit,
 	QMainWindow,
 	QMessageBox,
 	QPushButton,
@@ -38,6 +51,7 @@ from PySide6.QtWidgets import (
 
 from ore_music_player.application.playback_service import PlaybackService
 from ore_music_player.application.playlist_service import PlaylistService
+from ore_music_player.application.ports import PlaybackBackendError
 from ore_music_player.domain.models import (
 	DEFAULT_PLAYBACK_SPEED,
 	MAX_PLAYBACK_SPEED,
@@ -46,10 +60,15 @@ from ore_music_player.domain.models import (
 	Track,
 )
 from ore_music_player.infrastructure.audio.metadata import read_duration_seconds
-from ore_music_player.ui.playlist_view import PlaylistView
+from ore_music_player.ui.playlist_view import (
+	PlaylistTrackSelection,
+	PlaylistView,
+)
+from ore_music_player.ui.utils import format_duration
 
 TILE_BUTTON_SIZE = 112
 TILE_GRID_SPACING = 4
+SPEED_SLIDER_WIDTH = 160
 SUPPORTED_AUDIO_SUFFIXES = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
 SUPPORTED_AUDIO_NAME_FILTERS = [f"*{suffix}" for suffix in SUPPORTED_AUDIO_SUFFIXES]
 SEEK_SCALE = 1000
@@ -94,6 +113,12 @@ QSlider::handle:horizontal:disabled {{
 	border-color: #aeb5c0;
 }}
 """
+
+
+class PlaybackMode(StrEnum):
+	REPEAT_ALL = "repeat_all"
+	SHUFFLE = "shuffle"
+	REPEAT_ONE = "repeat_one"
 
 
 class PositionSlider(QSlider):
@@ -195,7 +220,7 @@ class AudioFileSystemModel(QFileSystemModel):
 			path = self.filePath(index)
 			if path not in self._duration_cache:
 				self._duration_cache[path] = read_duration_seconds(path)
-			return _format_duration(self._duration_cache[path])
+			return format_duration(self._duration_cache[path])
 		return super().data(index, role)
 
 	def set_duration(self, path: str, duration: float) -> None:
@@ -326,12 +351,12 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 		)
 
 	def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
-		if role == Qt.ItemDataRole.ForegroundRole:
+		if role == Qt.ItemDataRole.BackgroundRole:
 			path = self.filePath(index)
 			if self._playing_path and Path(path).resolve() == Path(
 				self._playing_path
 			).resolve():
-				return QColor("#d1495b")
+				return QColor("#dcecff")
 		return self.sourceModel().data(self.mapToSource(index), role)
 
 	def set_playing_path(self, path: str | Path | None) -> None:
@@ -345,7 +370,7 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 				self.dataChanged.emit(
 					index,
 					index.siblingAtColumn(self.columnCount() - 1),
-					[Qt.ItemDataRole.ForegroundRole],
+					[Qt.ItemDataRole.BackgroundRole],
 				)
 
 	def flags(self, index: QModelIndex):
@@ -389,18 +414,6 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 		return self.sourceModel().rootPath()
 
 
-def _format_duration(seconds: float | None) -> str:
-	if seconds is None:
-		return "--:--"
-
-	total_seconds = max(0, int(seconds))
-	minutes, remainder = divmod(total_seconds, 60)
-	hours, minutes = divmod(minutes, 60)
-	if hours:
-		return f"{hours}:{minutes:02d}:{remainder:02d}"
-	return f"{minutes}:{remainder:02d}"
-
-
 class MainWindow(QMainWindow):
 	_SETTINGS_ORGANIZATION = "OreMusicPlayer"
 	_SETTINGS_APPLICATION = "OreMusicPlayer"
@@ -411,6 +424,14 @@ class MainWindow(QMainWindow):
 	_REGISTERED_PATHS_KEY = "leftPane/registeredPaths"
 	_REGISTERED_FOLDERS_KEY = "leftPane/registeredFolders"
 	_DRIVE_ROOTS_GROUP = "leftPane/driveRoots"
+	_VOLUME_KEY = "playback/volume"
+	_RECENT_TRACKS_KEY = "playback/recentTracks"
+	_LAST_TRACK_PATH_KEY = "playback/lastTrackPath"
+	_LAST_POSITION_KEY = "playback/lastPosition"
+	_LAST_SPEED_KEY = "playback/lastSpeed"
+	_LAST_A_POINT_KEY = "playback/lastAPoint"
+	_LAST_B_POINT_KEY = "playback/lastBPoint"
+	_LAST_LOOP_ENABLED_KEY = "playback/lastLoopEnabled"
 
 	def __init__(
 		self,
@@ -419,30 +440,59 @@ class MainWindow(QMainWindow):
 	) -> None:
 		super().__init__()
 		self.playback_service = playback_service
+		self.playlist_service = playlist_service
 		self._settings = QSettings(
 			self._SETTINGS_ORGANIZATION,
 			self._SETTINGS_APPLICATION,
 		)
 		self._current_track: Track | None = None
+		self._playback_playlist_id: str | None = None
+		self._selected_playlist_track: PlaylistTrackSelection | None = None
+		self._playback_mode = PlaybackMode.REPEAT_ALL
 		self._queue: tuple[Track, ...] = ()
 		self._queue_index = -1
 		self._is_seeking = False
 		self._is_playing = False
 		self._duration_seconds = 0.0
+		self._shortcuts: list[QShortcut] = []
 		self._hidden_file_paths: set[Path] = set()
 		self._registered_paths: set[Path] = set()
 		self._registered_folders: set[Path] = self._load_registered_folders()
 		self._drive_roots = self._load_drive_roots()
-		self._splitter_migration_pending = self._settings.value(
+		self._recent_paths = self._load_recent_paths()
+		self._file_tree_filter = ""
+		splitter_layout_version = self._settings.value(
 			self._SPLITTER_LAYOUT_VERSION_KEY,
 			0,
 			type=int,
-		) < 12
+		)
+		splitter_state = self._settings.value(
+			self._SPLITTER_STATE_KEY,
+			QByteArray(),
+		)
+		has_saved_splitter_state = (
+			isinstance(splitter_state, QByteArray)
+			and not splitter_state.isEmpty()
+		)
+		self._splitter_migration_pending = (
+			has_saved_splitter_state and splitter_layout_version < 17
+		)
+		self._splitter_migration_delta = (
+			100
+			if splitter_layout_version >= 16
+			else 75
+			if splitter_layout_version >= 15
+			else 50
+			if splitter_layout_version >= 14
+			else 100
+			if splitter_layout_version >= 13
+			else 170
+		)
 
 		self.setWindowTitle("Ore Music Player")
 		icon_path = Path(__file__).resolve().parents[1] / "assets" / "app_icon.ico"
 		self.setWindowIcon(QIcon(str(icon_path)))
-		self.resize(960, 800)
+		self.resize(1209, 770)
 		self._create_file_menu()
 
 		central_widget = QWidget()
@@ -470,9 +520,14 @@ class MainWindow(QMainWindow):
 		self.drive_selector.currentTextChanged.connect(self._switch_drive)
 		self.drive_selector.setVisible(False)
 		file_layout.addWidget(self.drive_selector)
+		self.file_filter_edit = QLineEdit()
+		self.file_filter_edit.setPlaceholderText("ファイルを検索")
+		self.file_filter_edit.setClearButtonEnabled(True)
+		self.file_filter_edit.textChanged.connect(self._filter_file_tree)
+		file_layout.addWidget(self.file_filter_edit)
 		self._source_file_system_model = AudioFileSystemModel(self)
 		self._source_file_system_model.setFilter(
-			QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot
+			QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot | QDir.Filter.Dirs
 		)
 		self._source_file_system_model.setNameFilters(SUPPORTED_AUDIO_NAME_FILTERS)
 		self._source_file_system_model.setNameFilterDisables(False)
@@ -506,7 +561,7 @@ class MainWindow(QMainWindow):
 		self.file_tree.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
 		self.file_tree.setRootIndex(QModelIndex())
 		self._restore_left_pane_settings()
-		self.file_tree.setColumnWidth(0, 240)
+		self.file_tree.setColumnWidth(0, 250)
 		self.file_tree.setColumnWidth(1, 65)
 		self.file_tree.doubleClicked.connect(self._load_file_from_tree)
 		self.file_tree.selectionModel().selectionChanged.connect(
@@ -527,10 +582,11 @@ class MainWindow(QMainWindow):
 		file_layout.addWidget(self.delete_file_button)
 
 		right_splitter = QSplitter(Qt.Orientation.Vertical)
+		self.right_splitter = right_splitter
 		splitter.addWidget(right_splitter)
 		splitter.setStretchFactor(0, 1)
 		splitter.setStretchFactor(1, 2)
-		splitter.setSizes([170, 790])
+		splitter.setSizes([345, 615])
 
 		player_widget = QWidget()
 		player_layout = QVBoxLayout(player_widget)
@@ -540,45 +596,76 @@ class MainWindow(QMainWindow):
 		self.track_label = QLabel("曲が選択されていません")
 		self.status_label = QLabel("停止中")
 		label_size_policy = QSizePolicy(
-			QSizePolicy.Policy.Preferred,
+			QSizePolicy.Policy.Ignored,
 			QSizePolicy.Policy.Fixed,
 		)
 		self.track_label.setSizePolicy(label_size_policy)
 		self.status_label.setSizePolicy(label_size_policy)
-		track_status_layout = QVBoxLayout()
+		track_status_layout = QHBoxLayout()
 		track_status_layout.setContentsMargins(0, 0, 0, 0)
 		track_status_layout.setSpacing(0)
-		track_status_layout.addWidget(self.track_label)
+		track_status_layout.addWidget(self.track_label, 1)
 		player_layout.addLayout(track_status_layout)
 
 		button_grid = QGridLayout()
 		button_grid.setHorizontalSpacing(TILE_GRID_SPACING)
 		button_grid.setVerticalSpacing(TILE_GRID_SPACING)
 
-		previous_button = self._create_tile_button("前の曲", self.previous_track)
-		button_grid.addWidget(previous_button, 0, 1)
+		control_button_size = 96
+		self.previous_button = self._create_tile_button(
+			"前の曲",
+			self.previous_track,
+			control_button_size,
+		)
+		button_grid.addWidget(self.previous_button, 0, 0)
 
 		self.play_pause_button = self._create_tile_button(
 			"再生",
 			self.toggle_play_pause,
+			control_button_size,
 		)
 
-		button_grid.addWidget(self.play_pause_button, 0, 2)
+		button_grid.addWidget(self.play_pause_button, 0, 1)
 
-		stop_button = self._create_tile_button("停止", self.stop)
-		button_grid.addWidget(stop_button, 0, 3)
+		self.stop_button = self._create_tile_button(
+			"停止",
+			self.stop,
+			control_button_size,
+		)
+		button_grid.addWidget(self.stop_button, 0, 2)
 
+		self.next_button = self._create_tile_button(
+			"次の曲",
+			self.next_track,
+			control_button_size,
+		)
+		button_grid.addWidget(self.next_button, 0, 3)
 
-		next_button = self._create_tile_button("次の曲", self.next_track)
-		button_grid.addWidget(next_button, 0, 4)
-
-		self.set_a_button = self._create_tile_button("A設定", self.set_a)
-		button_grid.addWidget(self.set_a_button, 1, 1)
-		self.set_b_button = self._create_tile_button("B設定", self.set_b)
-		button_grid.addWidget(self.set_b_button, 1, 2)
-		self.loop_button = self._create_tile_button("A/Bループ\n開始", self.toggle_loop)
+		self.set_a_button = self._create_tile_button(
+			"A設定",
+			self.set_a,
+			control_button_size,
+		)
+		button_grid.addWidget(self.set_a_button, 0, 4)
+		self.set_b_button = self._create_tile_button(
+			"B設定",
+			self.set_b,
+			control_button_size,
+		)
+		button_grid.addWidget(self.set_b_button, 0, 5)
+		self.loop_button = self._create_tile_button(
+			"A/Bループ\n開始",
+			self.toggle_loop,
+			control_button_size,
+		)
 		self.loop_button.setEnabled(False)
-		button_grid.addWidget(self.loop_button, 1, 3)
+		button_grid.addWidget(self.loop_button, 0, 6)
+		self.playback_mode_button = self._create_tile_button(
+			self._playback_mode_text(self._playback_mode),
+			self.toggle_playback_mode,
+			control_button_size,
+		)
+		button_grid.addWidget(self.playback_mode_button, 0, 7)
 		player_layout.addLayout(button_grid)
 		player_layout.setAlignment(button_grid, Qt.AlignmentFlag.AlignLeft)
 
@@ -601,9 +688,19 @@ class MainWindow(QMainWindow):
 		bars_layout.addWidget(self.position_slider, 0, 2)
 		bars_layout.addWidget(self.duration_label, 0, 3)
 
+		self.speed_label = QLabel("再生速度")
+		self.speed_label.setSizePolicy(
+			QSizePolicy.Policy.Fixed,
+			QSizePolicy.Policy.Fixed,
+		)
 		min_speed_label = QLabel(f"{MIN_PLAYBACK_SPEED:.2f}x")
+		min_speed_label.setSizePolicy(
+			QSizePolicy.Policy.Fixed,
+			QSizePolicy.Policy.Fixed,
+		)
 		self.speed_slider = QSlider()
 		self._configure_slider(self.speed_slider)
+		self.speed_slider.setFixedWidth(SPEED_SLIDER_WIDTH)
 		speed_steps = int(
 			(MAX_PLAYBACK_SPEED - MIN_PLAYBACK_SPEED)
 			/ PLAYBACK_SPEED_STEP
@@ -619,11 +716,58 @@ class MainWindow(QMainWindow):
 			)
 		)
 		self.speed_slider.valueChanged.connect(self.change_speed)
+		self.speed_min_label = min_speed_label
 		self.speed_current_label = QLabel()
-		bars_layout.addWidget(QLabel("再生速度"), 1, 0)
-		bars_layout.addWidget(min_speed_label, 1, 1)
-		bars_layout.addWidget(self.speed_slider, 1, 2)
-		bars_layout.addWidget(self.speed_current_label, 1, 3)
+		self.speed_current_label.setSizePolicy(
+			QSizePolicy.Policy.Fixed,
+			QSizePolicy.Policy.Fixed,
+		)
+		speed_row_layout = QHBoxLayout()
+		speed_row_layout.setContentsMargins(0, 0, 0, 0)
+		speed_row_layout.setSpacing(8)
+		speed_row_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+		speed_row_layout.addWidget(self.speed_label)
+		speed_row_layout.addWidget(min_speed_label)
+		speed_row_layout.addWidget(self.speed_slider)
+		speed_row_layout.addWidget(self.speed_current_label)
+
+		self.volume_label = QLabel("音量")
+		self.volume_label.setAlignment(
+			Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+		)
+		self.volume_label.setSizePolicy(
+			QSizePolicy.Policy.Fixed,
+			QSizePolicy.Policy.Fixed,
+		)
+		self.volume_min_label = QLabel("0")
+		self.volume_min_label.setSizePolicy(
+			QSizePolicy.Policy.Fixed,
+			QSizePolicy.Policy.Fixed,
+		)
+		self.volume_value_label = QLabel()
+		self.volume_value_label.setSizePolicy(
+			QSizePolicy.Policy.Fixed,
+			QSizePolicy.Policy.Fixed,
+		)
+		self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+		self._configure_slider(self.volume_slider)
+		self.volume_slider.setRange(0, 100)
+		saved_volume = self._settings.value(self._VOLUME_KEY, 100, type=int)
+		self.volume_slider.setValue(max(0, min(100, saved_volume)))
+		self.volume_slider.setFixedWidth(SPEED_SLIDER_WIDTH)
+		self.volume_slider.setToolTip("音量")
+		self.volume_slider.valueChanged.connect(self.change_volume)
+		volume_layout = QHBoxLayout()
+		volume_layout.setContentsMargins(0, 0, 0, 0)
+		volume_layout.setSpacing(8)
+		volume_layout.addWidget(self.volume_label)
+		volume_layout.addWidget(self.volume_min_label)
+		volume_layout.addWidget(self.volume_slider)
+		volume_layout.addWidget(self.volume_value_label)
+		self.change_volume(self.volume_slider.value())
+		speed_row_layout.addLayout(volume_layout)
+		speed_row_layout.addStretch(1)
+		bars_layout.addLayout(speed_row_layout, 1, 0, 1, 4)
 
 		player_layout.addLayout(bars_layout)
 		self._update_speed_label(self.speed_slider.value())
@@ -634,14 +778,19 @@ class MainWindow(QMainWindow):
 		self._position_timer.start()
 
 		playlist_view = PlaylistView(playlist_service)
-		playlist_view.play_requested.connect(self.load_and_play)
+		self.playlist_view = playlist_view
+		playlist_view.play_requested.connect(self.load_playlist_track_selection)
+		playlist_view.track_selected.connect(self._set_selected_playlist_track)
+		player_widget.setMaximumHeight(player_widget.sizeHint().height())
 		right_splitter.addWidget(player_widget)
 		right_splitter.addWidget(playlist_view)
-		right_splitter.setStretchFactor(0, 2)
+		right_splitter.setStretchFactor(0, 0)
 		right_splitter.setStretchFactor(1, 1)
-		right_splitter.setSizes([430, 350])
+		right_splitter.setSizes([player_widget.sizeHint().height(), 430])
 
 		self.setCentralWidget(central_widget)
+		self._restore_last_playback()
+		self._create_shortcuts()
 		self._restore_splitter_state()
 
 	def showEvent(self, event) -> None:
@@ -652,9 +801,10 @@ class MainWindow(QMainWindow):
 
 	def _move_splitter_right(self) -> None:
 		sizes = self.main_splitter.sizes()
-		if len(sizes) == 2 and sizes[1] > 20:
-			self.main_splitter.setSizes([sizes[0] + 20, sizes[1] - 20])
-			self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 12)
+		delta = self._splitter_migration_delta
+		if len(sizes) == 2 and sizes[1] > delta:
+			self.main_splitter.setSizes([sizes[0] + delta, sizes[1] - delta])
+			self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 17)
 
 	def _restore_left_pane_settings(self) -> None:
 		header_state = self._settings.value(
@@ -690,7 +840,7 @@ class MainWindow(QMainWindow):
 			self._SPLITTER_STATE_KEY,
 			self.main_splitter.saveState(),
 		)
-		self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 12)
+		self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 17)
 		self._settings.setValue(
 			self._FILE_TREE_HEADER_STATE_KEY,
 			self.file_tree.header().saveState(),
@@ -699,17 +849,48 @@ class MainWindow(QMainWindow):
 			self._FILE_TREE_ROOT_KEY,
 			self.file_root_label.text(),
 		)
+		self._settings.setValue(self._VOLUME_KEY, self.volume_slider.value())
+		if self._current_track is not None:
+			state = self.playback_service.state
+			self._settings.setValue(
+				self._LAST_TRACK_PATH_KEY,
+				self._current_track.path,
+			)
+			self._settings.setValue(
+				self._LAST_POSITION_KEY,
+				self.playback_service.position_seconds,
+			)
+			self._settings.setValue(self._LAST_SPEED_KEY, str(state.speed))
+			self._save_optional_setting(
+				self._settings,
+				self._LAST_A_POINT_KEY,
+				state.a_point_seconds,
+			)
+			self._save_optional_setting(
+				self._settings,
+				self._LAST_B_POINT_KEY,
+				state.b_point_seconds,
+			)
+			self._settings.setValue(
+				self._LAST_LOOP_ENABLED_KEY,
+				state.loop_enabled,
+			)
 		self._save_registered_paths()
 		self._settings.sync()
 
 	def closeEvent(self, event) -> None:
+		self._position_timer.stop()
 		self._save_left_pane_settings()
 		super().closeEvent(event)
 
 	@staticmethod
-	def _create_tile_button(text: str, handler) -> QPushButton:
+	def _create_tile_button(
+		text: str,
+		handler,
+		size: int = TILE_BUTTON_SIZE,
+	) -> QPushButton:
 		button = QPushButton(text)
-		button.setFixedSize(TILE_BUTTON_SIZE, TILE_BUTTON_SIZE)
+		button.setFixedSize(size, size)
 		button.clicked.connect(handler)
 		return button
 
@@ -722,6 +903,95 @@ class MainWindow(QMainWindow):
 		open_folder_action = QAction("フォルダを開く", self)
 		open_folder_action.triggered.connect(self.open_folder)
 		file_menu.addAction(open_folder_action)
+
+		self.recent_menu = self.menuBar().addMenu("最近再生")
+		self._refresh_recent_menu()
+
+	def _refresh_recent_menu(self) -> None:
+		self.recent_menu.clear()
+		if not self._recent_paths:
+			empty_action = QAction("履歴なし", self)
+			empty_action.setEnabled(False)
+			self.recent_menu.addAction(empty_action)
+			return
+
+		for path in self._recent_paths:
+			action = QAction(path.name, self)
+			action.setToolTip(str(path))
+			action.triggered.connect(
+				lambda _checked=False, selected_path=path: self._play_recent_path(
+					selected_path
+				)
+			)
+			self.recent_menu.addAction(action)
+
+	def _load_recent_paths(self) -> list[Path]:
+		saved_paths = self._settings.value(self._RECENT_TRACKS_KEY, [])
+		if isinstance(saved_paths, str):
+			saved_paths = [saved_paths]
+		return [
+			Path(path)
+			for path in saved_paths
+			if str(path).strip() and Path(path).is_file()
+		][:10]
+
+	def _record_recent_path(self, path: str | Path) -> None:
+		normalized_path = self._normalize_path(path)
+		self._recent_paths = [
+			normalized_path,
+			*(recent_path for recent_path in self._recent_paths if recent_path != normalized_path),
+		][:10]
+		self._settings.setValue(
+			self._RECENT_TRACKS_KEY,
+			[str(recent_path) for recent_path in self._recent_paths],
+		)
+		self._settings.sync()
+		self._refresh_recent_menu()
+
+	def _play_recent_path(self, path: Path) -> None:
+		if (
+			not path.is_file()
+			or path.suffix.lower() not in SUPPORTED_AUDIO_SUFFIXES
+		):
+			self._recent_paths = [
+				recent_path
+				for recent_path in self._recent_paths
+				if recent_path != path
+			]
+			self._settings.setValue(
+				self._RECENT_TRACKS_KEY,
+				[str(recent_path) for recent_path in self._recent_paths],
+			)
+			self._refresh_recent_menu()
+			return
+		track = Track(
+			track_id=str(uuid4()),
+			path=str(path),
+			title=path.stem,
+			duration_seconds=read_duration_seconds(path),
+		)
+		self.load_tracks((track,))
+
+	@staticmethod
+	def _save_optional_setting(settings: QSettings, key: str, value: float | None) -> None:
+		if value is None:
+			settings.remove(key)
+		else:
+			settings.setValue(key, value)
+
+	def _create_shortcuts(self) -> None:
+		shortcut_handlers = (
+			("Space", self.toggle_play_pause),
+			("Left", self.seek_backward),
+			("Right", self.seek_forward),
+			("Ctrl+Left", self.previous_track),
+			("Ctrl+Right", self.next_track),
+		)
+		for sequence, handler in shortcut_handlers:
+			shortcut = QShortcut(QKeySequence(sequence), self)
+			shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+			shortcut.activated.connect(handler)
+			self._shortcuts.append(shortcut)
 
 	@staticmethod
 	def _configure_slider(slider: QSlider) -> None:
@@ -793,6 +1063,10 @@ class MainWindow(QMainWindow):
 	def _update_delete_button_state(self, *_args) -> None:
 		self.delete_file_button.setEnabled(bool(self._selected_unregister_paths()))
 
+	def _filter_file_tree(self, text: str) -> None:
+		self._file_tree_filter = text.strip().casefold()
+		self._update_file_tree_visibility()
+
 	def delete_selected_files(self) -> None:
 		selected_paths = self._selected_unregister_paths()
 		if not selected_paths:
@@ -835,14 +1109,20 @@ class MainWindow(QMainWindow):
 		self.file_tree.clearSelection()
 		self._update_delete_button_state()
 
-	def _update_file_tree_visibility(self, loaded_path: str | None = None) -> None:
+	def _update_file_tree_visibility(
+		self,
+		loaded_path: str | None = None,
+		parent_index: QModelIndex | None = None,
+	) -> None:
 		registered_paths = set(self._registered_paths)
 		registered_folders = set(self._registered_folders)
-		parent_index = self.file_tree.rootIndex()
-		if loaded_path:
-			loaded_index = self.file_system_model.index(loaded_path)
-			if loaded_index.isValid():
-				parent_index = loaded_index
+		filter_text = self._file_tree_filter
+		if parent_index is None:
+			parent_index = self.file_tree.rootIndex()
+			if loaded_path:
+				loaded_index = self.file_system_model.index(loaded_path)
+				if loaded_index.isValid():
+					parent_index = loaded_index
 
 		for row in range(self.file_system_model.rowCount(parent_index)):
 			index = self.file_system_model.index(row, 0, parent_index)
@@ -856,7 +1136,21 @@ class MainWindow(QMainWindow):
 				)
 			else:
 				is_visible = path in registered_paths
+			if is_visible and filter_text:
+				if self.file_system_model.isDir(index):
+					is_visible = any(
+						filter_text in registered_path.name.casefold()
+						and (
+							registered_path == path
+							or path in registered_path.parents
+						)
+						for registered_path in registered_paths
+					)
+				else:
+					is_visible = filter_text in path.name.casefold()
 			self.file_tree.setRowHidden(row, parent_index, not is_visible)
+			if self.file_system_model.isDir(index):
+				self._update_file_tree_visibility(parent_index=index)
 
 	def _hide_paths_from_file_tree(self, paths: list[Path] | tuple[Path, ...]) -> None:
 		for path in paths:
@@ -897,6 +1191,9 @@ class MainWindow(QMainWindow):
 			self.playback_service.stop()
 			self.playback_service.clear_loop()
 			self._current_track = None
+			self._playback_playlist_id = None
+			self.file_system_model.set_playing_path(None)
+			self.playlist_view.set_playing_track(None, None)
 			self._queue_index = -1
 			self._duration_seconds = 0.0
 			self.track_label.setText("曲が選択されていません")
@@ -1050,9 +1347,19 @@ class MainWindow(QMainWindow):
 		saved_paths = self._settings.value(self._REGISTERED_PATHS_KEY, [])
 		if isinstance(saved_paths, str):
 			saved_paths = [saved_paths]
+		playlist_paths = [
+			track.path
+			for playlist in self.playlist_service.list_all()
+			for track in playlist.tracks
+		]
 		self._registered_paths = {
 			self._normalize_path(path) for path in saved_paths if str(path).strip()
 		}
+		self._registered_paths.update(
+			self._normalize_path(path)
+			for path in playlist_paths
+			if str(path).strip()
+		)
 		existing_paths = {
 			path
 			for path in self._registered_paths
@@ -1078,6 +1385,63 @@ class MainWindow(QMainWindow):
 		self._queue = self._tracks_from_paths(existing_paths)
 		self._queue_index = 0
 		self._update_file_tree_visibility()
+
+	def _restore_last_playback(self) -> None:
+		last_path = self._settings.value(self._LAST_TRACK_PATH_KEY, "", type=str)
+		if not last_path:
+			return
+		last_path_object = self._normalize_path(last_path)
+		queue_index = next(
+			(
+				index
+				for index, track in enumerate(self._queue)
+				if self._normalize_path(track.path) == last_path_object
+			),
+			None,
+		)
+		if queue_index is None:
+			return
+
+		self._queue_index = queue_index
+		self._load_current_track(autoplay=False)
+
+		saved_speed = self._settings.value(
+			self._LAST_SPEED_KEY,
+			str(self.playback_service.state.speed),
+			type=str,
+		)
+		try:
+			self.playback_service.set_speed(saved_speed)
+			self.speed_slider.setValue(
+				round((float(saved_speed) - float(MIN_PLAYBACK_SPEED)) / float(PLAYBACK_SPEED_STEP))
+			)
+		except ValueError:
+			pass
+
+		saved_position = self._settings.value(
+			self._LAST_POSITION_KEY,
+			None,
+			type=float,
+		)
+		if saved_position is not None:
+			self._try_seek(max(0.0, saved_position))
+
+		saved_a = self._settings.value(self._LAST_A_POINT_KEY, None, type=float)
+		saved_b = self._settings.value(self._LAST_B_POINT_KEY, None, type=float)
+		if saved_a is not None and saved_b is not None:
+			try:
+				self.playback_service.set_a(saved_a)
+				self.playback_service.set_b(saved_b)
+				if self._settings.value(
+					self._LAST_LOOP_ENABLED_KEY,
+					False,
+					type=bool,
+				):
+					self.playback_service.enable_loop()
+			except ValueError:
+				self.playback_service.clear_loop()
+		self._update_ab_button_labels()
+		self._update_loop_button()
 
 	def _register_tracks(self, tracks: tuple[Track, ...]) -> None:
 		self._registered_paths.update(self._normalize_path(track.path) for track in tracks)
@@ -1140,9 +1504,15 @@ class MainWindow(QMainWindow):
 			for path in sorted_paths
 		)
 
-	def load_tracks(self, tracks: tuple[Track, ...], index: int = 0) -> None:
+	def load_tracks(
+		self,
+		tracks: tuple[Track, ...],
+		index: int = 0,
+		playlist_id: str | None = None,
+	) -> None:
 		if not tracks or not 0 <= index < len(tracks):
 			return
+		self._playback_playlist_id = playlist_id
 		self._queue = tracks
 		self._queue_index = index
 		self._register_tracks(tracks)
@@ -1227,12 +1597,18 @@ class MainWindow(QMainWindow):
 		):
 			return
 
+		self._playback_playlist_id = None
 		self._queue_index = track_index
 		self._load_current_track(autoplay=autoplay)
 
 	def _load_current_track(self, autoplay: bool) -> None:
 		self._current_track = self._queue[self._queue_index]
+		self._record_recent_path(self._current_track.path)
 		self.file_system_model.set_playing_path(self._current_track.path)
+		self.playlist_view.set_playing_track(
+			self._playback_playlist_id,
+			self._current_track.track_id,
+		)
 		self._update_file_tree_selection()
 		self.playback_service.load(self._current_track)
 		self.track_label.setText(self._current_track.title)
@@ -1249,10 +1625,43 @@ class MainWindow(QMainWindow):
 		if autoplay:
 			self.play()
 
-	def load_and_play(self, tracks: tuple[Track, ...] | Track) -> None:
-		if isinstance(tracks, Track):
-			tracks = (tracks,)
+	def load_and_play(self, tracks: tuple[Track, ...]) -> None:
+		self._selected_playlist_track = None
 		self.load_tracks(tuple(tracks), index=0)
+
+	def load_playlist_track_selection(
+		self,
+		selection: PlaylistTrackSelection,
+	) -> None:
+		self._selected_playlist_track = None
+		self.load_tracks(
+			selection.tracks,
+			index=selection.index,
+			playlist_id=selection.playlist_id,
+		)
+
+	def _set_selected_playlist_track(
+		self,
+		selection: PlaylistTrackSelection | None,
+	) -> None:
+		self._selected_playlist_track = selection
+
+	@staticmethod
+	def _playback_mode_text(mode: PlaybackMode) -> str:
+		labels = {
+			PlaybackMode.REPEAT_ALL: "再生方法\n全曲ループ",
+			PlaybackMode.SHUFFLE: "再生方法\nランダム",
+			PlaybackMode.REPEAT_ONE: "再生方法\n1曲ループ",
+		}
+		return labels[mode]
+
+	def toggle_playback_mode(self) -> None:
+		modes = tuple(PlaybackMode)
+		mode_index = modes.index(self._playback_mode)
+		self._playback_mode = modes[(mode_index + 1) % len(modes)]
+		self.playback_mode_button.setText(
+			self._playback_mode_text(self._playback_mode)
+		)
 
 	def _set_playback_status(self, label: str, is_playing: bool) -> None:
 		self._is_playing = is_playing
@@ -1260,6 +1669,11 @@ class MainWindow(QMainWindow):
 		self.play_pause_button.setText("一時停止" if is_playing else "再生")
 
 	def toggle_play_pause(self) -> None:
+		if self._selected_playlist_track is not None:
+			selected_track = self._selected_playlist_track
+			self._selected_playlist_track = None
+			self.load_playlist_track_selection(selected_track)
+			return
 		if self._is_playing:
 			self.pause()
 		else:
@@ -1281,15 +1695,72 @@ class MainWindow(QMainWindow):
 		self.playback_service.stop()
 		self._set_playback_status("停止中", is_playing=False)
 
+	def seek_backward(self) -> None:
+		self._seek_relative(-5.0)
+
+	def seek_forward(self) -> None:
+		self._seek_relative(5.0)
+
+	def _seek_relative(self, offset_seconds: float) -> None:
+		if self._current_track is None:
+			return
+		position = max(0.0, self.playback_service.position_seconds + offset_seconds)
+		if self._duration_seconds > 0:
+			position = min(position, self._duration_seconds)
+		if self._try_seek(position):
+			self.position_slider.setValue(round(position * SEEK_SCALE))
+			self.position_label.setText(self._format_time(position))
+
+	def _try_seek(self, position: float) -> bool:
+		was_playing = self._is_playing
+		try:
+			self.playback_service.seek(position)
+		except PlaybackBackendError:
+			return False
+		if was_playing:
+			self.play()
+		return True
+
 	def previous_track(self) -> None:
 		if self._queue_index > 0:
 			self._queue_index -= 1
 			self._load_current_track(autoplay=True)
 
 	def next_track(self) -> None:
-		if self._queue_index + 1 < len(self._queue):
-			self._queue_index += 1
-			self._load_current_track(autoplay=True)
+		self._advance_track(automatic=False)
+
+	def _advance_track(self, automatic: bool) -> None:
+		if not self._queue:
+			return
+
+		if automatic and self._playback_mode is PlaybackMode.REPEAT_ONE:
+			self._restart_current_track()
+			return
+
+		if self._playback_mode is PlaybackMode.SHUFFLE:
+			if len(self._queue) == 1:
+				next_index = self._queue_index
+			else:
+				candidate_indices = [
+					index
+					for index in range(len(self._queue))
+					if index != self._queue_index
+				]
+				next_index = random.choice(candidate_indices)
+		elif self._queue_index + 1 < len(self._queue):
+			next_index = self._queue_index + 1
+		elif self._playback_mode is PlaybackMode.REPEAT_ALL:
+			next_index = 0
+		else:
+			return
+
+		self._queue_index = next_index
+		self._load_current_track(autoplay=True)
+
+	def _restart_current_track(self) -> None:
+		if self._current_track is None:
+			return
+		self._load_current_track(autoplay=True)
 
 	def _start_seeking(self) -> None:
 		self._is_seeking = True
@@ -1304,8 +1775,8 @@ class MainWindow(QMainWindow):
 			return
 
 		position = self.position_slider.sliderPosition() / SEEK_SCALE
-		self.playback_service.seek(position)
-		self.position_label.setText(self._format_time(position))
+		if self._try_seek(position):
+			self.position_label.setText(self._format_time(position))
 
 	def _current_position_for_action(self) -> float:
 		if self._is_seeking:
@@ -1373,6 +1844,14 @@ class MainWindow(QMainWindow):
 			return
 
 		position = self.playback_service.position_seconds
+		if (
+			self._is_playing
+			and not self.playback_service.state.loop_enabled
+			and self._duration_seconds > 0
+			and position >= max(0.0, self._duration_seconds - 0.05)
+		):
+			self._advance_track(automatic=True)
+			return
 		if self._duration_seconds > 0:
 			position = min(position, self._duration_seconds)
 
@@ -1412,7 +1891,7 @@ class MainWindow(QMainWindow):
 
 	@staticmethod
 	def _format_time(seconds: float | None) -> str:
-		return _format_duration(seconds)
+		return format_duration(seconds)
 
 	def toggle_loop(self) -> None:
 		if self._current_track is None:
@@ -1440,3 +1919,7 @@ class MainWindow(QMainWindow):
 		speed = self._speed_from_slider(slider_value)
 		self._update_speed_label(slider_value)
 		self.playback_service.set_speed(speed)
+
+	def change_volume(self, slider_value: int) -> None:
+		self.volume_value_label.setText(str(slider_value))
+		self.playback_service.set_volume(float(slider_value))

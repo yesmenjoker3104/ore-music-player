@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
 	QAbstractItemView,
 	QGridLayout,
+	QHeaderView,
 	QInputDialog,
 	QLabel,
 	QListWidget,
@@ -21,22 +24,20 @@ from PySide6.QtWidgets import (
 
 from ore_music_player.application.playlist_service import PlaylistService
 from ore_music_player.domain.models import Playlist, Track
+from ore_music_player.infrastructure.audio.metadata import read_duration_seconds
+from ore_music_player.ui.utils import format_duration
 
-TILE_BUTTON_SIZE = 112
+TILE_BUTTON_SIZE = 96
 TILE_GRID_SPACING = 4
 SUPPORTED_AUDIO_SUFFIXES = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
+LIST_HEADER_HEIGHT = 28
 
 
-def _format_duration(seconds: float | None) -> str:
-	if seconds is None:
-		return "--:--"
-
-	total_seconds = max(0, int(seconds))
-	minutes, remainder = divmod(total_seconds, 60)
-	hours, minutes = divmod(minutes, 60)
-	if hours:
-		return f"{hours}:{minutes:02d}:{remainder:02d}"
-	return f"{minutes}:{remainder:02d}"
+@dataclass(frozen=True, slots=True)
+class PlaylistTrackSelection:
+	tracks: tuple[Track, ...]
+	index: int
+	playlist_id: str | None = None
 
 
 class PlaylistListWidget(QListWidget):
@@ -67,14 +68,63 @@ class PlaylistListWidget(QListWidget):
 		super().dropEvent(event)
 
 
+class TrackTableWidget(QTableWidget):
+	_NAME_COLUMN_RATIO = 0.8
+	paths_dropped = Signal(object)
+	rows_reordered = Signal()
+
+	def __init__(self, rows: int, columns: int) -> None:
+		super().__init__(rows, columns)
+		self.setAcceptDrops(True)
+		self.setDropIndicatorShown(False)
+		self.setDragEnabled(True)
+		self.setDefaultDropAction(Qt.DropAction.MoveAction)
+		self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+
+	def dragEnterEvent(self, event) -> None:
+		if event.mimeData().hasUrls():
+			event.acceptProposedAction()
+			return
+		super().dragEnterEvent(event)
+
+	def dragMoveEvent(self, event) -> None:
+		if event.mimeData().hasUrls():
+			event.acceptProposedAction()
+			return
+		super().dragMoveEvent(event)
+
+	def dropEvent(self, event) -> None:
+		if event.mimeData().hasUrls():
+			self.paths_dropped.emit(
+				[Path(url.toLocalFile()) for url in event.mimeData().urls()]
+			)
+			event.acceptProposedAction()
+			return
+		super().dropEvent(event)
+		self.rows_reordered.emit()
+
+	def resizeEvent(self, event) -> None:
+		super().resizeEvent(event)
+		header = self.horizontalHeader()
+		available_width = header.viewport().width()
+		if available_width <= 0:
+			return
+		name_width = int(available_width * self._NAME_COLUMN_RATIO)
+		header.resizeSection(0, name_width)
+		header.resizeSection(1, available_width - name_width)
+
+
 class PlaylistView(QWidget):
 	play_requested = Signal(object)
+	track_selected = Signal(object)
 
 	def __init__(self, playlist_service: PlaylistService) -> None:
 		super().__init__()
 		self.playlist_service = playlist_service
 		self._playlists: tuple[Playlist, ...] = ()
 		self._active_playlist_id: str | None = None
+		self._playing_playlist_id: str | None = None
+		self._playing_track_id: str | None = None
 
 		layout = QVBoxLayout(self)
 		layout.setContentsMargins(0, 0, 0, 0)
@@ -85,7 +135,9 @@ class PlaylistView(QWidget):
 		playlist_panel = QWidget()
 		playlist_layout = QVBoxLayout(playlist_panel)
 		playlist_layout.setContentsMargins(0, 0, 0, 0)
-		playlist_layout.addWidget(QLabel("プレイリスト"))
+		playlist_title = QLabel("プレイリスト")
+		playlist_title.setFixedHeight(LIST_HEADER_HEIGHT)
+		playlist_layout.addWidget(playlist_title)
 
 		self.playlist_list = PlaylistListWidget()
 		self.playlist_list.setAcceptDrops(True)
@@ -99,7 +151,7 @@ class PlaylistView(QWidget):
 			self._playlist_selection_changed
 		)
 		self.playlist_list.paths_dropped.connect(self._add_dropped_paths)
-		playlist_layout.addWidget(self.playlist_list)
+		playlist_layout.addWidget(self.playlist_list, 1)
 
 		playlist_buttons = QGridLayout()
 		playlist_buttons.setHorizontalSpacing(TILE_GRID_SPACING)
@@ -110,13 +162,13 @@ class PlaylistView(QWidget):
 		playlist_buttons.addWidget(rename_button, 0, 1)
 		delete_button = self._create_tile_button("削除", self.delete_selected)
 		playlist_buttons.addWidget(delete_button, 0, 2)
-
-		play_button = self._create_tile_button("プレイリスト\nを再生", self.play_playlist)
-		playlist_buttons.addWidget(play_button, 0, 3)
 		playlist_layout.addLayout(playlist_buttons)
 
-		self.track_list = QTableWidget(0, 2)
+		self.track_list = TrackTableWidget(0, 2)
 		self.track_list.setHorizontalHeaderLabels(["曲名", "再生時間"])
+		self.track_list.horizontalHeader().setSectionResizeMode(
+			QHeaderView.ResizeMode.Fixed
+		)
 		self.track_list.setSelectionBehavior(
 			QAbstractItemView.SelectionBehavior.SelectRows
 		)
@@ -127,13 +179,21 @@ class PlaylistView(QWidget):
 			QAbstractItemView.EditTrigger.NoEditTriggers
 		)
 		self.track_list.verticalHeader().setVisible(False)
-		self.track_list.horizontalHeader().setStretchLastSection(True)
 		self.track_list.itemSelectionChanged.connect(
 			self._track_selection_changed
 		)
+		self.track_list.itemDoubleClicked.connect(self._play_selected_track)
+		self.track_list.paths_dropped.connect(self._add_dropped_paths)
+		self.track_list.rows_reordered.connect(self._reorder_tracks)
+
+		track_panel = QWidget()
+		track_layout = QVBoxLayout(track_panel)
+		track_layout.setContentsMargins(0, 0, 0, 0)
+		track_layout.addSpacing(LIST_HEADER_HEIGHT + track_layout.spacing())
+		track_layout.addWidget(self.track_list, 1)
 
 		splitter.addWidget(playlist_panel)
-		splitter.addWidget(self.track_list)
+		splitter.addWidget(track_panel)
 		splitter.setStretchFactor(0, 1)
 		splitter.setStretchFactor(1, 2)
 		splitter.setSizes([280, 560])
@@ -171,6 +231,7 @@ class PlaylistView(QWidget):
 		else:
 			self.playlist_list.clearSelection()
 		self._select_playlist(self.playlist_list.currentRow())
+		self._update_playing_highlights()
 
 	def selected_playlist_id(self) -> str | None:
 		row = self.playlist_list.currentRow()
@@ -184,9 +245,64 @@ class PlaylistView(QWidget):
 			return None
 		return self.playlist_service.get(playlist_id)
 
+	def selected_track_selection(self) -> PlaylistTrackSelection | None:
+		if not self.track_list.selectedItems():
+			return None
+		playlist = self.selected_playlist()
+		row = self.track_list.currentRow()
+		if playlist is None or not 0 <= row < len(playlist.tracks):
+			return None
+		return PlaylistTrackSelection(
+			tuple(playlist.tracks),
+			row,
+			playlist.playlist_id,
+		)
+
+	def set_playing_track(
+		self,
+		playlist_id: str | None,
+		track_id: str | None,
+	) -> None:
+		self._playing_playlist_id = playlist_id
+		self._playing_track_id = track_id
+		self._update_playing_highlights()
+
+	def _update_playing_highlights(self) -> None:
+		playing_background = QColor("#dcecff")
+		for row, playlist in enumerate(self._playlists):
+			item = self.playlist_list.item(row)
+			if item is None:
+				continue
+			item.setData(
+				Qt.ItemDataRole.BackgroundRole,
+				playing_background
+				if playlist.playlist_id == self._playing_playlist_id
+				else None,
+			)
+
+		for row in range(self.track_list.rowCount()):
+			for column in range(self.track_list.columnCount()):
+				item = self.track_list.item(row, column)
+				if item is None:
+					continue
+				track_item = self.track_list.item(row, 0)
+				is_playing = (
+					self._active_playlist_id == self._playing_playlist_id
+					and track_item is not None
+					and track_item.data(Qt.ItemDataRole.UserRole)
+					== self._playing_track_id
+				)
+				item.setData(
+					Qt.ItemDataRole.BackgroundRole,
+					playing_background if is_playing else None,
+				)
+
 	def _select_playlist(self, row: int) -> None:
+		self.track_selected.emit(None)
 		self.track_list.setRowCount(0)
 		if not 0 <= row < len(self._playlists):
+			self._active_playlist_id = None
+			self._update_playing_highlights()
 			return
 		self._active_playlist_id = self._playlists[row].playlist_id
 		self.track_list.blockSignals(True)
@@ -195,16 +311,23 @@ class PlaylistView(QWidget):
 		for track in self._playlists[row].tracks:
 			track_row = self.track_list.rowCount()
 			self.track_list.insertRow(track_row)
-			self.track_list.setItem(track_row, 0, QTableWidgetItem(track.title))
+			duration_seconds = track.duration_seconds
+			if duration_seconds is None:
+				duration_seconds = read_duration_seconds(track.path)
+			title_item = QTableWidgetItem(track.title)
+			title_item.setData(Qt.ItemDataRole.UserRole, track.track_id)
+			self.track_list.setItem(track_row, 0, title_item)
 			self.track_list.setItem(
 				track_row,
 				1,
-				QTableWidgetItem(_format_duration(track.duration_seconds)),
+				QTableWidgetItem(format_duration(duration_seconds)),
 			)
+		self._update_playing_highlights()
 
 	def _playlist_selection_changed(self) -> None:
 		if not self.playlist_list.selectedItems():
 			return
+		self.track_selected.emit(None)
 		self.track_list.blockSignals(True)
 		self.track_list.clearSelection()
 		self.track_list.blockSignals(False)
@@ -213,6 +336,7 @@ class PlaylistView(QWidget):
 	def _track_selection_changed(self) -> None:
 		if not self.track_list.selectedItems():
 			return
+		self.track_selected.emit(self.selected_track_selection())
 		self.playlist_list.blockSignals(True)
 		self.playlist_list.clearSelection()
 		self.playlist_list.blockSignals(False)
@@ -285,7 +409,12 @@ class PlaylistView(QWidget):
 			for path in file_paths:
 				if path.suffix.lower() not in SUPPORTED_AUDIO_SUFFIXES:
 					continue
-				track = Track(track_id=str(uuid4()), path=str(path), title=path.stem)
+				track = Track(
+					track_id=str(uuid4()),
+					path=str(path),
+					title=path.stem,
+					duration_seconds=read_duration_seconds(path),
+				)
 				self.playlist_service.add_track(playlist_id, track)
 		self.refresh()
 
@@ -317,7 +446,32 @@ class PlaylistView(QWidget):
 	def remove_track(self) -> None:
 		self._delete_selected_tracks()
 
-	def play_playlist(self) -> None:
+	def _reorder_tracks(self) -> None:
 		playlist = self.selected_playlist()
-		if playlist is not None and playlist.tracks:
-			self.play_requested.emit(playlist.tracks)
+		if playlist is None:
+			return
+		ordered_track_ids = [
+			self.track_list.item(row, 0).data(Qt.ItemDataRole.UserRole)
+			for row in range(self.track_list.rowCount())
+		]
+		if set(ordered_track_ids) != {track.track_id for track in playlist.tracks}:
+			self.refresh()
+			return
+
+		self.playlist_service.reorder_tracks(
+			playlist.playlist_id,
+			ordered_track_ids,
+		)
+		self.refresh()
+
+	def _play_selected_track(self, item: QTableWidgetItem) -> None:
+		playlist = self.selected_playlist()
+		row = item.row()
+		if playlist is not None and 0 <= row < len(playlist.tracks):
+			self.play_requested.emit(
+				PlaylistTrackSelection(
+					tuple(playlist.tracks),
+					row,
+					playlist.playlist_id,
+				)
+			)

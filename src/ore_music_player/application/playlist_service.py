@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from ore_music_player.application.ports import PlaylistRepository
 from ore_music_player.domain.models import Playlist, Track
 
@@ -62,6 +64,16 @@ class PlaylistService:
             current_index=current_index,
             new_index=new_index
         )
+        self.repository.save(updated_playlist)
+        return updated_playlist
+
+    def reorder_tracks(
+        self,
+        playlist_id: str,
+        ordered_track_ids: Sequence[str],
+    ) -> Playlist:
+        playlist = self.get(playlist_id)
+        updated_playlist = playlist.reorder_tracks(ordered_track_ids)
         self.repository.save(updated_playlist)
         return updated_playlist
 

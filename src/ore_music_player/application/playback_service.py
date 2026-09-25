@@ -28,6 +28,7 @@ class PlaybackService:
         self.backend.load(track)
         self.state = self.state.load_track(track.track_id)
         self.backend.set_speed(float(self.state.speed))
+        self.backend.set_volume(float(self.state.volume))
         self._sync_loop()
         return self.state
 
@@ -49,8 +50,9 @@ class PlaybackService:
         return self.state
 
     def seek(self, position_seconds: float) -> PlaybackState:
-        self.state = self.state.set_position(position_seconds)
-        self.backend.seek(self.state.position_seconds)
+        next_state = self.state.set_position(position_seconds)
+        self.backend.seek(next_state.position_seconds)
+        self.state = next_state
         return self.state
 
     def set_speed(
@@ -60,6 +62,10 @@ class PlaybackService:
         self.state = self.state.set_speed(speed)
         self.backend.set_speed(float(self.state.speed))
         return self.state
+
+    def set_volume(self, volume: float) -> None:
+        self.state = self.state.set_volume(volume)
+        self.backend.set_volume(float(self.state.volume))
 
     def set_a(
         self,
@@ -79,9 +85,7 @@ class PlaybackService:
 
     def enable_loop(self) -> PlaybackState:
         self.state = self.state.set_loop_enabled(True)
-        region = self.state.loop_region
-        if region is not None:
-            self.backend.set_loop(region.start_seconds, region.end_seconds)
+        self._sync_loop()
         return self.state
 
     def disable_loop(self) -> PlaybackState:

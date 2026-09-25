@@ -58,6 +58,25 @@ def test_playlist_moves_track() -> None:
     assert playlist.tracks == tuple(tracks)
 
 
+def test_playlist_reorders_tracks_without_mutating_original() -> None:
+    tracks = tuple(
+        make_track(f"track-00{number}") for number in range(1, 4)
+    )
+    playlist = Playlist("playlist_1", "My Playlist", tracks)
+
+    result = playlist.reorder_tracks(("track-003", "track-001", "track-002"))
+
+    assert result.tracks == (tracks[2], tracks[0], tracks[1])
+    assert playlist.tracks == tracks
+
+
+def test_playlist_reorder_rejects_incomplete_track_ids() -> None:
+    playlist = make_playlist().add_track(make_track("track-001"))
+
+    with pytest.raises(ValueError, match="ordered_track_ids"):
+        playlist.reorder_tracks(("missing-track",))
+
+
 def test_playlist_renames_and_rejects_blank_names() -> None:
     playlist = make_playlist()
     result = playlist.rename("New Playlist Name")

@@ -5,6 +5,10 @@ from typing import Protocol
 from ore_music_player.domain.models import Playlist, Track
 
 
+class PlaybackBackendError(RuntimeError):
+    pass
+
+
 class PlaybackBackend(Protocol):
     def load(self, track: Track) -> None:
         ...
@@ -22,6 +26,9 @@ class PlaybackBackend(Protocol):
         ...
 
     def set_speed(self, speed: float) -> None:
+        ...
+
+    def set_volume(self, volume: float) -> None:
         ...
 
     def set_loop(
