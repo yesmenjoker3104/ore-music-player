@@ -5,7 +5,8 @@ Set-Location -LiteralPath $projectRoot
 
 $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $pythonPath)) {
-    throw 'The project virtual environment is missing: .venv\Scripts\python.exe'
+    $pythonCommand = Get-Command python.exe -ErrorAction Stop
+    $pythonPath = $pythonCommand.Source
 }
 
 $mpvDirectory = Join-Path $projectRoot 'vendor\mpv'
