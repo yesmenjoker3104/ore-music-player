@@ -1147,6 +1147,32 @@ def test_ab_buttons_show_positions_and_toggle_loop_button(
     window.close()
 
 
+def test_ab_shortcuts_set_points_and_toggle_loop(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    window.load_tracks((Track("track-001", "song.mp3", "Song"),))
+    window._set_duration(120.0)
+    shortcuts = {
+        shortcut.key().toString(): shortcut
+        for shortcut in window._shortcuts
+    }
+
+    backend.position_seconds = 12.0
+    shortcuts["A"].activated.emit()
+    backend.position_seconds = 60.0
+    shortcuts["B"].activated.emit()
+    shortcuts["S"].activated.emit()
+
+    state = window.playback_service.state
+    assert state.a_point_seconds == 12.0
+    assert state.b_point_seconds == 60.0
+    assert state.loop_enabled
+    assert backend.loop_calls[-1] == (12.0, 60.0)
+
+    window.close()
+
+
 def test_speed_slider_starts_at_default_speed(
     qt_application: QApplication,
 ) -> None:
