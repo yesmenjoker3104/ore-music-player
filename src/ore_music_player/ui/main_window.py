@@ -17,7 +17,6 @@ from PySide6.QtCore import (
 	QModelIndex,
 	QPointF,
 	QRectF,
-	QSettings,
 	Qt,
 	QThread,
 	QTimer,
