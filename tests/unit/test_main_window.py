@@ -107,6 +107,7 @@ def test_file_operations_are_in_file_menu_not_tile_buttons(
     assert [action.text() for action in file_menu.actions()] == [
         "音声ファイルを開く",
         "フォルダを開く",
+        "更新を確認",
     ]
 
     button_texts = {
@@ -216,7 +217,13 @@ def test_playing_file_tree_row_uses_background_highlight(
     )
 
     assert background is not None
-    assert background.name() == "#dcecff"
+    assert background.name() == "#b8d8e8"
+    foreground = window.file_system_model.data(
+        index,
+        Qt.ItemDataRole.ForegroundRole,
+    )
+    assert foreground is not None
+    assert foreground.name() == "#102a43"
     window.close()
 
 
@@ -474,10 +481,22 @@ def test_left_pane_settings_are_saved_and_restored(
     try:
         window._settings.clear()
         window._registered_paths.clear()
+        window.show()
+        qt_application.processEvents()
         window._set_file_tree_root(tmp_path)
-        window.main_splitter.setSizes([240, 720])
+        window.resize(700, 520)
+        window.main_splitter.setSizes([180, 500])
+        window.right_splitter.setSizes([150, 300])
+        window.file_tree.setColumnWidth(0, 320)
+        window.file_tree.setColumnWidth(1, 95)
         window._save_left_pane_settings()
         saved_left_width = window.main_splitter.sizes()[0]
+        saved_right_sizes = window.right_splitter.sizes()
+        saved_window_size = window.size()
+        saved_file_columns = (
+            window.file_tree.columnWidth(0),
+            window.file_tree.columnWidth(1),
+        )
     finally:
         window.close()
 
@@ -487,6 +506,13 @@ def test_left_pane_settings_are_saved_and_restored(
         assert Path(restored_window.file_system_model.rootPath()) == tmp_path
         assert not restored_window.file_tree.rootIndex().isValid()
         assert restored_window.main_splitter.sizes()[0] == saved_left_width
+        assert restored_window.right_splitter.sizes()[0] == saved_right_sizes[0]
+        assert restored_window.height() == saved_window_size.height()
+        assert restored_window.width() >= 700
+        assert (
+            restored_window.file_tree.columnWidth(0),
+            restored_window.file_tree.columnWidth(1),
+        ) == saved_file_columns
     finally:
         settings = restored_window._settings
         restored_window.close()
@@ -507,6 +533,7 @@ def test_saved_left_pane_layout_is_migrated_by_75_pixels(
     window.close()
     settings.setValue(window._SPLITTER_STATE_KEY, splitter_state)
     settings.setValue(window._SPLITTER_LAYOUT_VERSION_KEY, 16)
+    settings.remove(window._WINDOW_GEOMETRY_KEY)
     settings.sync()
 
     migrated_window, _ = make_window(qt_application)
@@ -927,8 +954,8 @@ def test_double_clicking_playlist_track_starts_that_track(
     assert backend.play_calls == 1
     playlist_item = window.playlist_view.playlist_list.item(0)
     assert playlist_item is not None
-    assert playlist_item.background().color().name() == "#dcecff"
-    assert item.background().color().name() == "#dcecff"
+    assert playlist_item.background().color().name() == "#b8d8e8"
+    assert item.background().color().name() == "#b8d8e8"
 
     window.load_tracks((Track("catalog-track-001", "catalog-song.mp3", "Catalog"),))
     assert playlist_item.background().style() == Qt.BrushStyle.NoBrush

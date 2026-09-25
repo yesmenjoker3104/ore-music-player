@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import random
+import shutil
+import sys
 from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
@@ -15,7 +17,9 @@ from PySide6.QtCore import (
 	QRectF,
 	QSettings,
 	Qt,
+	QThread,
 	QTimer,
+	Signal,
 )
 from PySide6.QtGui import (
 	QAction,
@@ -60,6 +64,15 @@ from ore_music_player.domain.models import (
 	Track,
 )
 from ore_music_player.infrastructure.audio.metadata import read_duration_seconds
+from ore_music_player.infrastructure.update_service import (
+	ReleaseInfo,
+	download_release,
+	fetch_latest_release,
+	make_update_workspace,
+	prepare_update,
+	start_update_process,
+	update_script_path,
+)
 from ore_music_player.ui.playlist_view import (
 	PlaylistTrackSelection,
 	PlaylistView,
@@ -356,7 +369,13 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 			if self._playing_path and Path(path).resolve() == Path(
 				self._playing_path
 			).resolve():
-				return QColor("#dcecff")
+				return QColor("#b8d8e8")
+		if role == Qt.ItemDataRole.ForegroundRole:
+			path = self.filePath(index)
+			if self._playing_path and Path(path).resolve() == Path(
+				self._playing_path
+			).resolve():
+				return QColor("#102a43")
 		return self.sourceModel().data(self.mapToSource(index), role)
 
 	def set_playing_path(self, path: str | Path | None) -> None:
@@ -414,12 +433,42 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 		return self.sourceModel().rootPath()
 
 
+class UpdateWorker(QThread):
+	no_update = Signal()
+	update_ready = Signal(object)
+	failed = Signal(str)
+
+	def run(self) -> None:
+		workspace: Path | None = None
+		try:
+			release = fetch_latest_release()
+			if release is None:
+				self.no_update.emit()
+				return
+			workspace = make_update_workspace()
+			archive_path = download_release(
+				release,
+				workspace / "update.zip",
+			)
+			staged_application = prepare_update(
+				archive_path,
+				workspace / "staged",
+			)
+			self.update_ready.emit((release, staged_application))
+		except Exception as error:
+			if workspace is not None:
+				shutil.rmtree(workspace, ignore_errors=True)
+			self.failed.emit(str(error))
+
+
 class MainWindow(QMainWindow):
 	_SETTINGS_ORGANIZATION = "OreMusicPlayer"
 	_SETTINGS_APPLICATION = "OreMusicPlayer"
 	_SPLITTER_STATE_KEY = "leftPane/splitterState"
+	_RIGHT_SPLITTER_STATE_KEY = "rightPane/splitterState"
 	_SPLITTER_LAYOUT_VERSION_KEY = "leftPane/splitterLayoutVersion"
 	_FILE_TREE_HEADER_STATE_KEY = "leftPane/fileTreeHeaderState"
+	_WINDOW_GEOMETRY_KEY = "window/geometry"
 	_FILE_TREE_ROOT_KEY = "leftPane/rootPath"
 	_REGISTERED_PATHS_KEY = "leftPane/registeredPaths"
 	_REGISTERED_FOLDERS_KEY = "leftPane/registeredFolders"
@@ -455,6 +504,8 @@ class MainWindow(QMainWindow):
 		self._is_playing = False
 		self._duration_seconds = 0.0
 		self._shortcuts: list[QShortcut] = []
+		self._update_worker: UpdateWorker | None = None
+		self._layout_restored_after_show = False
 		self._hidden_file_paths: set[Path] = set()
 		self._registered_paths: set[Path] = set()
 		self._registered_folders: set[Path] = self._load_registered_folders()
@@ -560,9 +611,10 @@ class MainWindow(QMainWindow):
 		self.file_tree.setDragEnabled(True)
 		self.file_tree.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
 		self.file_tree.setRootIndex(QModelIndex())
-		self._restore_left_pane_settings()
+		self.file_tree.header().setStretchLastSection(False)
 		self.file_tree.setColumnWidth(0, 250)
 		self.file_tree.setColumnWidth(1, 65)
+		self._restore_left_pane_settings()
 		self.file_tree.doubleClicked.connect(self._load_file_from_tree)
 		self.file_tree.selectionModel().selectionChanged.connect(
 			self._update_delete_button_state
@@ -583,6 +635,7 @@ class MainWindow(QMainWindow):
 
 		right_splitter = QSplitter(Qt.Orientation.Vertical)
 		self.right_splitter = right_splitter
+		right_splitter.splitterMoved.connect(self._save_left_pane_settings)
 		splitter.addWidget(right_splitter)
 		splitter.setStretchFactor(0, 1)
 		splitter.setStretchFactor(1, 2)
@@ -787,14 +840,20 @@ class MainWindow(QMainWindow):
 		right_splitter.setStretchFactor(0, 0)
 		right_splitter.setStretchFactor(1, 1)
 		right_splitter.setSizes([player_widget.sizeHint().height(), 430])
+		self._restore_right_splitter_state()
 
 		self.setCentralWidget(central_widget)
+		self._restore_window_geometry()
 		self._restore_last_playback()
 		self._create_shortcuts()
 		self._restore_splitter_state()
 
 	def showEvent(self, event) -> None:
 		super().showEvent(event)
+		if not self._layout_restored_after_show:
+			self._layout_restored_after_show = True
+			self._restore_splitter_state()
+			self._restore_right_splitter_state()
 		if self._splitter_migration_pending:
 			self._splitter_migration_pending = False
 			QTimer.singleShot(100, self._move_splitter_right)
@@ -813,6 +872,28 @@ class MainWindow(QMainWindow):
 		)
 		if isinstance(header_state, QByteArray) and not header_state.isEmpty():
 			self.file_tree.header().restoreState(header_state)
+
+	def _restore_right_splitter_state(self) -> bool:
+		splitter_state = self._settings.value(
+			self._RIGHT_SPLITTER_STATE_KEY,
+			QByteArray(),
+		)
+		return (
+			isinstance(splitter_state, QByteArray)
+			and not splitter_state.isEmpty()
+			and self.right_splitter.restoreState(splitter_state)
+		)
+
+	def _restore_window_geometry(self) -> bool:
+		geometry = self._settings.value(
+			self._WINDOW_GEOMETRY_KEY,
+			QByteArray(),
+		)
+		return (
+			isinstance(geometry, QByteArray)
+			and not geometry.isEmpty()
+			and self.restoreGeometry(geometry)
+		)
 
 	def _restore_splitter_state(self) -> bool:
 		splitter_state = self._settings.value(
@@ -839,6 +920,14 @@ class MainWindow(QMainWindow):
 		self._settings.setValue(
 			self._SPLITTER_STATE_KEY,
 			self.main_splitter.saveState(),
+		)
+		self._settings.setValue(
+			self._RIGHT_SPLITTER_STATE_KEY,
+			self.right_splitter.saveState(),
+		)
+		self._settings.setValue(
+			self._WINDOW_GEOMETRY_KEY,
+			self.saveGeometry(),
 		)
 		self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 17)
 		self._settings.setValue(
@@ -904,8 +993,64 @@ class MainWindow(QMainWindow):
 		open_folder_action.triggered.connect(self.open_folder)
 		file_menu.addAction(open_folder_action)
 
+		self.check_update_action = QAction("更新を確認", self)
+		self.check_update_action.triggered.connect(self.check_for_updates)
+		file_menu.addAction(self.check_update_action)
+
 		self.recent_menu = self.menuBar().addMenu("最近再生")
 		self._refresh_recent_menu()
+
+	def check_for_updates(self) -> None:
+		if not getattr(sys, "frozen", False):
+			QMessageBox.information(
+				self,
+				"更新確認",
+				"更新確認はExe版で起動したときに利用できます。",
+			)
+			return
+		if self._update_worker is not None and self._update_worker.isRunning():
+			return
+		self.check_update_action.setEnabled(False)
+		self._update_worker = UpdateWorker(self)
+		self._update_worker.no_update.connect(self._show_no_update)
+		self._update_worker.update_ready.connect(self._confirm_update)
+		self._update_worker.failed.connect(self._show_update_error)
+		self._update_worker.finished.connect(self._update_finished)
+		self._update_worker.start()
+
+	def _show_no_update(self) -> None:
+		QMessageBox.information(self, "更新確認", "現在のバージョンは最新版です。")
+
+	def _confirm_update(self, payload: object) -> None:
+		release, staged_application = payload
+		if not isinstance(release, ReleaseInfo) or not isinstance(staged_application, Path):
+			self._show_update_error("更新データの形式が不正です")
+			return
+		answer = QMessageBox.question(
+			self,
+			"更新があります",
+			f"バージョン {release.version} に更新します。アプリを再起動しますか？",
+			QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+			QMessageBox.StandardButton.Yes,
+		)
+		if answer != QMessageBox.StandardButton.Yes:
+			return
+		try:
+			start_update_process(
+				staged_application,
+				Path(sys.executable).resolve().parent,
+				update_script_path(),
+			)
+			self.close()
+		except Exception as error:
+			self._show_update_error(str(error))
+
+	def _show_update_error(self, message: str) -> None:
+		QMessageBox.critical(self, "更新失敗", f"更新を確認できませんでした。\n{message}")
+
+	def _update_finished(self) -> None:
+		self.check_update_action.setEnabled(True)
+		self._update_worker = None
 
 	def _refresh_recent_menu(self) -> None:
 		self.recent_menu.clear()

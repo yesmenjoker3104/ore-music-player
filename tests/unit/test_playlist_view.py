@@ -148,8 +148,10 @@ def test_playing_playlist_and_track_use_background_highlights(
     track_item = view.track_list.item(0, 0)
     assert playlist_item is not None
     assert track_item is not None
-    assert playlist_item.background().color().name() == "#dcecff"
-    assert track_item.background().color().name() == "#dcecff"
+    assert playlist_item.background().color().name() == "#b8d8e8"
+    assert track_item.background().color().name() == "#b8d8e8"
+    assert playlist_item.foreground().color().name() == "#102a43"
+    assert track_item.foreground().color().name() == "#102a43"
 
 
 def test_playlist_action_buttons_match_transport_size(
@@ -194,6 +196,26 @@ def test_track_table_reorders_tracks_and_persists_order(
     playlist = repository.get("playlist-001")
     assert playlist is not None
     assert playlist.tracks == (tracks[1], tracks[0], tracks[2])
+
+
+def test_reorder_tracks_ignores_empty_rows(
+    qt_application: QApplication,
+) -> None:
+    view, repository = make_view(qt_application)
+    tracks = tuple(
+        Track(f"track-00{index}", f"song-{index}.mp3", f"Song {index}")
+        for index in range(1, 3)
+    )
+    repository.save(Playlist("playlist-001", "Practice", tracks))
+    view.refresh()
+    view.track_list.insertRow(1)
+
+    view._reorder_tracks()
+
+    playlist = repository.get("playlist-001")
+    assert playlist is not None
+    assert playlist.tracks == tracks
+    assert view.track_list.rowCount() == 2
 
 
 def test_dropped_files_and_folders_are_added_to_selected_playlist(

@@ -31,6 +31,8 @@ TILE_BUTTON_SIZE = 96
 TILE_GRID_SPACING = 4
 SUPPORTED_AUDIO_SUFFIXES = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
 LIST_HEADER_HEIGHT = 28
+PLAYING_BACKGROUND_COLOR = "#b8d8e8"
+PLAYING_FOREGROUND_COLOR = "#102a43"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +103,9 @@ class TrackTableWidget(QTableWidget):
 			event.acceptProposedAction()
 			return
 		super().dropEvent(event)
+		for row in range(self.rowCount() - 1, -1, -1):
+			if self.item(row, 0) is None:
+				self.removeRow(row)
 		self.rows_reordered.emit()
 
 	def resizeEvent(self, event) -> None:
@@ -268,7 +273,8 @@ class PlaylistView(QWidget):
 		self._update_playing_highlights()
 
 	def _update_playing_highlights(self) -> None:
-		playing_background = QColor("#dcecff")
+		playing_background = QColor(PLAYING_BACKGROUND_COLOR)
+		playing_foreground = QColor(PLAYING_FOREGROUND_COLOR)
 		for row, playlist in enumerate(self._playlists):
 			item = self.playlist_list.item(row)
 			if item is None:
@@ -276,6 +282,12 @@ class PlaylistView(QWidget):
 			item.setData(
 				Qt.ItemDataRole.BackgroundRole,
 				playing_background
+				if playlist.playlist_id == self._playing_playlist_id
+				else None,
+			)
+			item.setData(
+				Qt.ItemDataRole.ForegroundRole,
+				playing_foreground
 				if playlist.playlist_id == self._playing_playlist_id
 				else None,
 			)
@@ -295,6 +307,10 @@ class PlaylistView(QWidget):
 				item.setData(
 					Qt.ItemDataRole.BackgroundRole,
 					playing_background if is_playing else None,
+				)
+				item.setData(
+					Qt.ItemDataRole.ForegroundRole,
+					playing_foreground if is_playing else None,
 				)
 
 	def _select_playlist(self, row: int) -> None:
@@ -451,8 +467,9 @@ class PlaylistView(QWidget):
 		if playlist is None:
 			return
 		ordered_track_ids = [
-			self.track_list.item(row, 0).data(Qt.ItemDataRole.UserRole)
+			item.data(Qt.ItemDataRole.UserRole)
 			for row in range(self.track_list.rowCount())
+			if (item := self.track_list.item(row, 0)) is not None
 		]
 		if set(ordered_track_ids) != {track.track_id for track in playlist.tracks}:
 			self.refresh()
