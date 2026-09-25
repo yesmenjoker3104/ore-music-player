@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -44,8 +45,13 @@ def fetch_latest_release(timeout_seconds: float = 10.0) -> ReleaseInfo | None:
             "User-Agent": "OreMusicPlayer-Updater",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-        release = json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            release = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
 
     tag_name = str(release.get("tag_name", ""))
     if not tag_name or not is_newer_version(tag_name):

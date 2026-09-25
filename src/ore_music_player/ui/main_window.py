@@ -497,12 +497,6 @@ class MainWindow(QMainWindow):
 	_DRIVE_ROOTS_GROUP = "leftPane/driveRoots"
 	_VOLUME_KEY = "playback/volume"
 	_RECENT_TRACKS_KEY = "playback/recentTracks"
-	_LAST_TRACK_PATH_KEY = "playback/lastTrackPath"
-	_LAST_POSITION_KEY = "playback/lastPosition"
-	_LAST_SPEED_KEY = "playback/lastSpeed"
-	_LAST_A_POINT_KEY = "playback/lastAPoint"
-	_LAST_B_POINT_KEY = "playback/lastBPoint"
-	_LAST_LOOP_ENABLED_KEY = "playback/lastLoopEnabled"
 
 	def __init__(
 		self,
@@ -878,7 +872,6 @@ class MainWindow(QMainWindow):
 
 		self.setCentralWidget(central_widget)
 		self._restore_window_geometry()
-		self._restore_last_playback()
 		self._create_shortcuts()
 		self._restore_splitter_state()
 
@@ -977,35 +970,6 @@ class MainWindow(QMainWindow):
 			self.file_root_label.text(),
 		)
 		self._settings.setValue(self._VOLUME_KEY, self.volume_slider.value())
-		if self._current_track is not None:
-			state = self.playback_service.state
-			self._settings.setValue(
-				self._LAST_TRACK_PATH_KEY,
-				self._current_track.path,
-			)
-			self._settings.setValue(
-				self._LAST_POSITION_KEY,
-				(
-					self._pending_restore_position
-					if self._pending_restore_position is not None
-					else self.playback_service.position_seconds
-				),
-			)
-			self._settings.setValue(self._LAST_SPEED_KEY, str(state.speed))
-			self._save_optional_setting(
-				self._settings,
-				self._LAST_A_POINT_KEY,
-				state.a_point_seconds,
-			)
-			self._save_optional_setting(
-				self._settings,
-				self._LAST_B_POINT_KEY,
-				state.b_point_seconds,
-			)
-			self._settings.setValue(
-				self._LAST_LOOP_ENABLED_KEY,
-				state.loop_enabled,
-			)
 		self._save_registered_paths()
 		self._settings.sync()
 
@@ -1158,13 +1122,6 @@ class MainWindow(QMainWindow):
 			duration_seconds=read_duration_seconds(path),
 		)
 		self.load_tracks((track,))
-
-	@staticmethod
-	def _save_optional_setting(settings: QSettings, key: str, value: float | None) -> None:
-		if value is None:
-			settings.remove(key)
-		else:
-			settings.setValue(key, value)
 
 	def _create_shortcuts(self) -> None:
 		shortcut_handlers = (
@@ -1632,72 +1589,6 @@ class MainWindow(QMainWindow):
 		self._queue = self._tracks_from_paths(existing_paths, read_durations=False)
 		self._queue_index = 0
 		self._update_file_tree_visibility()
-
-	def _restore_last_playback(self) -> None:
-		last_path = self._settings.value(self._LAST_TRACK_PATH_KEY, "", type=str)
-		if not last_path:
-			return
-		last_path_object = self._normalize_path(last_path)
-		queue_index = next(
-			(
-				index
-				for index, track in enumerate(self._queue)
-				if self._normalize_path(track.path) == last_path_object
-			),
-			None,
-		)
-		if queue_index is None:
-			return
-
-		self._queue_index = queue_index
-		self._current_track = self._queue[self._queue_index]
-		self._record_recent_path(self._current_track.path)
-		self.file_system_model.set_playing_path(self._current_track.path)
-		self.playlist_view.set_playing_track(
-			self._playback_playlist_id,
-			self._current_track.track_id,
-		)
-		self._update_file_tree_selection()
-		self.track_label.setText(self._current_track.title)
-		self._set_playback_status("読み込み待ち", is_playing=False)
-
-		saved_speed = self._settings.value(
-			self._LAST_SPEED_KEY,
-			str(self.playback_service.state.speed),
-			type=str,
-		)
-		try:
-			self.playback_service.set_speed(saved_speed)
-			self.speed_slider.setValue(
-				round((float(saved_speed) - float(MIN_PLAYBACK_SPEED)) / float(PLAYBACK_SPEED_STEP))
-			)
-		except ValueError:
-			pass
-
-		saved_position = self._settings.value(
-			self._LAST_POSITION_KEY,
-			None,
-			type=float,
-		)
-		if saved_position is not None:
-			self._pending_restore_position = max(0.0, saved_position)
-
-		saved_a = self._settings.value(self._LAST_A_POINT_KEY, None, type=float)
-		saved_b = self._settings.value(self._LAST_B_POINT_KEY, None, type=float)
-		if saved_a is not None and saved_b is not None:
-			try:
-				self.playback_service.set_a(saved_a)
-				self.playback_service.set_b(saved_b)
-				if self._settings.value(
-					self._LAST_LOOP_ENABLED_KEY,
-					False,
-					type=bool,
-				):
-					self.playback_service.enable_loop()
-			except ValueError:
-				self.playback_service.clear_loop()
-		self._update_ab_button_labels()
-		self._update_loop_button()
 
 	def _register_tracks(self, tracks: tuple[Track, ...]) -> None:
 		self._registered_paths.update(self._normalize_path(track.path) for track in tracks)
