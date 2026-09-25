@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from ore_music_player.domain.models import Playlist, Track
 from ore_music_player.infrastructure.persistence.sqlite_repository import (
 	SQLitePlaylistRepository,
@@ -48,6 +50,26 @@ def test_saved_playlist_can_be_restored_by_a_new_repository(
 	with SQLitePlaylistRepository(database_path) as repository:
 		assert repository.get("playlist-001") == playlist
 		assert repository.list_all() == (playlist,)
+
+
+def test_list_all_reads_empty_and_populated_playlists_without_get_calls(
+	tmp_path: Path,
+	monkeypatch,
+) -> None:
+	database_path = tmp_path / "music.sqlite3"
+	empty_playlist = Playlist("playlist-empty", "Empty")
+	populated_playlist = make_playlist()
+
+	with SQLitePlaylistRepository(database_path) as repository:
+		repository.save(empty_playlist)
+		repository.save(populated_playlist)
+		monkeypatch.setattr(
+			repository,
+			"get",
+			lambda _playlist_id: pytest.fail("list_all() must not call get()"),
+		)
+
+		assert repository.list_all() == (empty_playlist, populated_playlist)
 
 
 def test_save_updates_playlist_name_and_tracks(tmp_path: Path) -> None:

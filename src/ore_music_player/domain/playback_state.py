@@ -77,6 +77,10 @@ class PlaybackState:
         return self.settings.speed
 
     @property
+    def volume(self) -> Decimal:
+        return self.settings.volume
+
+    @property
     def loop_region(self) -> LoopRegion | None:
         if self.a_point_seconds is None or self.b_point_seconds is None:
             return None
@@ -140,6 +144,15 @@ class PlaybackState:
             settings=self.settings.with_speed(value),
         )
 
+    def set_volume(
+        self,
+        value: Decimal | float | int | str,
+    ) -> PlaybackState:
+        return replace(
+            self,
+            settings=self.settings.with_volume(value),
+        )
+
     def set_a(self, position_seconds: float) -> PlaybackState:
         position = validate_position_seconds(
             position_seconds,
@@ -193,17 +206,5 @@ class PlaybackState:
             loop_enabled=enabled,
         )
 
-    def loop_seek_target(
-        self,
-        position_seconds: float,
-    ) -> float | None:
-        position = validate_position_seconds(position_seconds)
-        region = self.loop_region
 
-        if not self.loop_enabled or region is None:
-            return None
-
-        if position >= region.end_seconds:
-            return region.start_seconds
-
-        return None
+__all__ = ["PlaybackState", "PlaybackStatus"]

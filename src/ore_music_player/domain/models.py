@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from math import isfinite
@@ -8,6 +9,9 @@ MIN_PLAYBACK_SPEED = Decimal("0.50")
 MAX_PLAYBACK_SPEED = Decimal("1.50")
 PLAYBACK_SPEED_STEP = Decimal("0.05")
 DEFAULT_PLAYBACK_SPEED = Decimal("1.00")
+MIN_VOLUME = Decimal("0")
+MAX_VOLUME = Decimal("100")
+DEFAULT_VOLUME = Decimal("100")
 
 
 def validate_playback_speed(
@@ -48,6 +52,23 @@ def validate_position_seconds(
         raise ValueError(f"{field_name}には有限の0以上の値を指定してください")
 
     return position
+
+
+def validate_volume(value: Decimal | float | int | str) -> Decimal:
+    try:
+        volume = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as error:
+        raise ValueError(f"音量は数値で指定してください: {value}") from error
+
+    if not volume.is_finite():
+        raise ValueError(f"音量には有限の値を指定してください: {value}")
+
+    if not MIN_VOLUME <= volume <= MAX_VOLUME:
+        raise ValueError(
+            f"音量は {MIN_VOLUME} から {MAX_VOLUME} の間で指定してください: {value}"
+        )
+
+    return volume
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +124,7 @@ class LoopRegion:
 @dataclass(frozen=True, slots=True)
 class PlaybackSettings:
     speed: Decimal = DEFAULT_PLAYBACK_SPEED
+    volume: Decimal = DEFAULT_VOLUME
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -110,6 +132,7 @@ class PlaybackSettings:
             "speed",
             validate_playback_speed(self.speed),
         )
+        object.__setattr__(self, "volume", validate_volume(self.volume))
 
     def with_speed(
         self,
@@ -118,6 +141,15 @@ class PlaybackSettings:
         return replace(
             self,
             speed=validate_playback_speed(value),
+        )
+
+    def with_volume(
+        self,
+        value: Decimal | float | int | str,
+    ) -> PlaybackSettings:
+        return replace(
+            self,
+            volume=validate_volume(value),
         )
 
 @dataclass(frozen=True, slots=True)
@@ -166,3 +198,17 @@ class Playlist:
         track = tracks.pop(current_index)
         tracks.insert(new_index, track)
         return replace(self, tracks=tuple(tracks))
+
+    def reorder_tracks(self, ordered_track_ids: Sequence[str]) -> Playlist:
+        ordered_ids = tuple(ordered_track_ids)
+        current_ids = {track.track_id for track in self.tracks}
+        if len(ordered_ids) != len(self.tracks) or set(ordered_ids) != current_ids:
+            raise ValueError(
+                "ordered_track_idsは現在のtrack_idを過不足なく含む必要があります"
+            )
+
+        tracks_by_id = {track.track_id: track for track in self.tracks}
+        return replace(
+            self,
+            tracks=tuple(tracks_by_id[track_id] for track_id in ordered_ids),
+        )

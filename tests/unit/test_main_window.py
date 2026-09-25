@@ -3,7 +3,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QItemSelectionModel, Qt
+from conftest import FakePlaylistRepository
+from PySide6.QtCore import QItemSelectionModel, QSettings, Qt
 from PySide6.QtGui import QIcon, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -16,16 +17,19 @@ from PySide6.QtWidgets import (
 
 from ore_music_player.application.playback_service import PlaybackService
 from ore_music_player.application.playlist_service import PlaylistService
-from ore_music_player.domain.models import Playlist, Track
+from ore_music_player.application.ports import PlaybackBackendError
+from ore_music_player.domain.models import Track
 from ore_music_player.ui.main_window import (
     SLIDER_GROOVE_HEIGHT,
     MainWindow,
+    PlaybackMode,
 )
 
 
 @dataclass
 class FakePlaybackBackend:
     speed_calls: list[float] = field(default_factory=list)
+    volume_calls: list[float] = field(default_factory=list)
     seek_calls: list[float] = field(default_factory=list)
     loop_calls: list[tuple[float | None, float | None]] = field(
         default_factory=list
@@ -35,6 +39,7 @@ class FakePlaybackBackend:
     stop_calls: int = 0
     position_seconds: float = 0.0
     duration_seconds: float | None = None
+    fail_seek: bool = False
 
     def load(self, track) -> None:
         pass
@@ -49,10 +54,16 @@ class FakePlaybackBackend:
         self.stop_calls += 1
 
     def seek(self, position: float) -> None:
+        if self.fail_seek:
+            raise PlaybackBackendError("seek failed")
         self.seek_calls.append(position)
+        self.position_seconds = position
 
     def set_speed(self, speed: float) -> None:
         self.speed_calls.append(speed)
+
+    def set_volume(self, volume: float) -> None:
+        self.volume_calls.append(volume)
 
     def set_loop(
         self,
@@ -62,25 +73,9 @@ class FakePlaybackBackend:
         self.loop_calls.append((start_seconds, end_seconds))
 
 
-@dataclass
-class FakePlaylistRepository:
-    playlists: dict[str, Playlist] = field(default_factory=dict)
-
-    def get(self, playlist_id: str) -> Playlist | None:
-        return self.playlists.get(playlist_id)
-
-    def list_all(self) -> tuple[Playlist, ...]:
-        return tuple(self.playlists.values())
-
-    def save(self, playlist: Playlist) -> None:
-        self.playlists[playlist.playlist_id] = playlist
-
-    def delete(self, playlist_id: str) -> None:
-        del self.playlists[playlist_id]
-
-
 @pytest.fixture(scope="session")
 def qt_application() -> QApplication:
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     application = QApplication.instance()
     if application is None:
         application = QApplication([])
@@ -174,6 +169,104 @@ def test_file_tree_uses_filesystem_hierarchy_and_duration_column(
     )
 
     window.close()
+
+
+def test_file_tree_filter_hides_non_matching_audio_files(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    window._settings.clear()
+    first_path = tmp_path / "first.wav"
+    second_path = tmp_path / "second.wav"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+    window._set_file_tree_root(tmp_path)
+    window.load_tracks(window._tracks_from_paths((first_path, second_path)))
+    QTest.qWait(100)
+
+    window.file_filter_edit.setText("first")
+    QTest.qWait(100)
+    first_index = window.file_system_model.index(str(first_path))
+    second_index = window.file_system_model.index(str(second_path))
+
+    assert not window.file_tree.isRowHidden(first_index.row(), first_index.parent())
+    assert window.file_tree.isRowHidden(second_index.row(), second_index.parent())
+    window.close()
+
+
+def test_playing_file_tree_row_uses_background_highlight(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    audio_path = tmp_path / "playing.wav"
+    audio_path.write_bytes(b"audio")
+    window._settings.clear()
+    window._set_file_tree_root(tmp_path)
+    window.load_tracks(
+        (Track("track-001", str(audio_path), "Playing"),)
+    )
+    QTest.qWait(100)
+
+    index = window.file_system_model.index(str(audio_path))
+    background = window.file_system_model.data(
+        index,
+        Qt.ItemDataRole.BackgroundRole,
+    )
+
+    assert background is not None
+    assert background.name() == "#dcecff"
+    window.close()
+
+
+def test_loading_track_updates_recent_menu(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    window._settings.clear()
+    audio_path = tmp_path / "recent.wav"
+    audio_path.write_bytes(b"audio")
+
+    window.load_tracks(window._tracks_from_paths((audio_path,)))
+
+    assert window._recent_paths[0] == audio_path.resolve()
+    assert window.recent_menu.actions()[0].text() == audio_path.name
+    window.close()
+
+
+def test_last_playback_state_is_restored(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    audio_path = tmp_path / "resume.wav"
+    audio_path.write_bytes(b"audio")
+    window, _ = make_window(qt_application)
+    window._settings.clear()
+    window._registered_paths.clear()
+    window.load_tracks(window._tracks_from_paths((audio_path,)))
+    window.playback_service.set_speed("0.75")
+    window.playback_service.seek(12.0)
+    window.playback_service.set_a(3.0)
+    window.playback_service.set_b(8.0)
+    window._save_left_pane_settings()
+    window.close()
+
+    restored_window, restored_backend = make_window(qt_application)
+    try:
+        qt_application.processEvents()
+        assert restored_window._current_track is not None
+        assert Path(restored_window._current_track.path) == audio_path.resolve()
+        assert restored_window.playback_service.state.speed == 0.75
+        assert restored_window.playback_service.state.a_point_seconds == 3.0
+        assert restored_window.playback_service.state.b_point_seconds == 8.0
+        assert restored_backend.seek_calls[-1] == 12.0
+    finally:
+        settings = restored_window._settings
+        restored_window.close()
+        settings.clear()
+        settings.sync()
 
 
 def test_open_folders_keep_both_folders_visible(
@@ -378,13 +471,15 @@ def test_left_pane_settings_are_saved_and_restored(
     tmp_path,
 ) -> None:
     window, _ = make_window(qt_application)
-    window._settings.clear()
-    window._registered_paths.clear()
-    window._set_file_tree_root(tmp_path)
-    window.main_splitter.setSizes([240, 720])
-    window._save_left_pane_settings()
-    saved_left_width = window.main_splitter.sizes()[0]
-    window.close()
+    try:
+        window._settings.clear()
+        window._registered_paths.clear()
+        window._set_file_tree_root(tmp_path)
+        window.main_splitter.setSizes([240, 720])
+        window._save_left_pane_settings()
+        saved_left_width = window.main_splitter.sizes()[0]
+    finally:
+        window.close()
 
     restored_window, _ = make_window(qt_application)
     try:
@@ -395,6 +490,43 @@ def test_left_pane_settings_are_saved_and_restored(
     finally:
         settings = restored_window._settings
         restored_window.close()
+        settings.clear()
+        settings.sync()
+
+
+def test_saved_left_pane_layout_is_migrated_by_75_pixels(
+    qt_application: QApplication,
+) -> None:
+    settings = QSettings("OreMusicPlayer", "OreMusicPlayer")
+    settings.clear()
+    window, _ = make_window(qt_application)
+    window.show()
+    qt_application.processEvents()
+    window.main_splitter.setSizes([245, 715])
+    splitter_state = window.main_splitter.saveState()
+    window.close()
+    settings.setValue(window._SPLITTER_STATE_KEY, splitter_state)
+    settings.setValue(window._SPLITTER_LAYOUT_VERSION_KEY, 16)
+    settings.sync()
+
+    migrated_window, _ = make_window(qt_application)
+    try:
+        migrated_window.show()
+        qt_application.processEvents()
+        before_width = migrated_window.main_splitter.sizes()[0]
+        migrated_window._move_splitter_right()
+
+        assert migrated_window.main_splitter.sizes()[0] == before_width + 100
+        assert (
+            settings.value(
+                migrated_window._SPLITTER_LAYOUT_VERSION_KEY,
+                0,
+                type=int,
+            )
+            == 17
+        )
+    finally:
+        migrated_window.close()
         settings.clear()
         settings.sync()
 
@@ -423,6 +555,7 @@ def test_registered_tracks_are_restored_after_root_changes(
 
     restored_window, _ = make_window(qt_application)
     try:
+        QTest.qWait(250)
         assert restored_window._registered_paths == {
             first_path.resolve(),
             second_path.resolve(),
@@ -430,9 +563,47 @@ def test_registered_tracks_are_restored_after_root_changes(
         assert {
             Path(track.path).resolve() for track in restored_window._queue
         } == restored_window._registered_paths
+        for path in (first_path, second_path):
+            index = restored_window.file_system_model.index(str(path))
+            assert index.isValid()
+            assert not restored_window.file_tree.isRowHidden(
+                index.row(),
+                index.parent(),
+            )
     finally:
         settings = restored_window._settings
         restored_window.close()
+        settings.clear()
+        settings.sync()
+
+
+def test_playlist_tracks_are_registered_for_left_pane_on_restore(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    audio_path = tmp_path / "playlist-track.wav"
+    audio_path.write_bytes(b"audio")
+    playlist_service = window.playlist_view.playlist_service
+    playlist_service.create("playlist-001", "Practice")
+    playlist_service.add_track(
+        "playlist-001",
+        Track("playlist-track-001", str(audio_path), "Playlist Track"),
+    )
+    window._settings.clear()
+    window._registered_paths.clear()
+    window._registered_folders.clear()
+    window._restore_registered_tracks()
+
+    try:
+        QTest.qWait(250)
+        assert audio_path.resolve() in window._registered_paths
+        index = window.file_system_model.index(str(audio_path))
+        assert index.isValid()
+        assert not window.file_tree.isRowHidden(index.row(), index.parent())
+    finally:
+        settings = window._settings
+        window.close()
         settings.clear()
         settings.sync()
 
@@ -719,6 +890,172 @@ def test_double_clicking_existing_queued_file_starts_it(
     window.close()
 
 
+def test_selecting_playlist_track_then_pressing_play_starts_that_track(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    track = Track("playlist-track-001", "playlist-song.mp3", "Playlist Song")
+    playlist_service = window.playlist_view.playlist_service
+    playlist_service.create("playlist-001", "Practice")
+    playlist_service.add_track("playlist-001", track)
+    window.playlist_view.refresh()
+    window.playlist_view.track_list.selectRow(0)
+    window.stop()
+
+    window.play_pause_button.click()
+
+    assert window._current_track == track
+    assert backend.play_calls == 1
+    window.close()
+
+
+def test_double_clicking_playlist_track_starts_that_track(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    track = Track("playlist-track-001", "playlist-song.mp3", "Playlist Song")
+    playlist_service = window.playlist_view.playlist_service
+    playlist_service.create("playlist-001", "Practice")
+    playlist_service.add_track("playlist-001", track)
+    window.playlist_view.refresh()
+    item = window.playlist_view.track_list.item(0, 0)
+    assert item is not None
+
+    window.playlist_view.track_list.itemDoubleClicked.emit(item)
+
+    assert window._current_track == track
+    assert backend.play_calls == 1
+    playlist_item = window.playlist_view.playlist_list.item(0)
+    assert playlist_item is not None
+    assert playlist_item.background().color().name() == "#dcecff"
+    assert item.background().color().name() == "#dcecff"
+
+    window.load_tracks((Track("catalog-track-001", "catalog-song.mp3", "Catalog"),))
+    assert playlist_item.background().style() == Qt.BrushStyle.NoBrush
+    assert item.background().style() == Qt.BrushStyle.NoBrush
+    window.close()
+
+
+def test_transport_and_ab_buttons_share_one_row(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    window.show()
+    qt_application.processEvents()
+
+    control_buttons = (
+        window.previous_button,
+        window.play_pause_button,
+        window.stop_button,
+        window.next_button,
+        window.set_a_button,
+        window.set_b_button,
+        window.loop_button,
+        window.playback_mode_button,
+    )
+    assert all(button.height() == 96 for button in control_buttons)
+    assert len({button.geometry().top() for button in control_buttons}) == 1
+    window.close()
+
+
+def test_playback_mode_button_cycles_through_three_modes(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+
+    assert window._playback_mode is PlaybackMode.REPEAT_ALL
+    assert "全曲ループ" in window.playback_mode_button.text()
+
+    window.playback_mode_button.click()
+    assert window._playback_mode is PlaybackMode.SHUFFLE
+    assert "ランダム" in window.playback_mode_button.text()
+
+    window.playback_mode_button.click()
+    assert window._playback_mode is PlaybackMode.REPEAT_ONE
+    assert "1曲ループ" in window.playback_mode_button.text()
+
+    window.playback_mode_button.click()
+    assert window._playback_mode is PlaybackMode.REPEAT_ALL
+    window.close()
+
+
+def test_repeat_one_restarts_current_track_at_end(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    window.load_tracks((Track("track-001", "song.mp3", "Song"),))
+    window._playback_mode = PlaybackMode.REPEAT_ONE
+    window._set_duration(120.0)
+    backend.position_seconds = 120.0
+
+    window._update_position()
+
+    assert window._queue_index == 0
+    assert backend.seek_calls == []
+    assert backend.play_calls == 2
+    window.close()
+
+
+def test_repeat_one_reloads_track_when_end_seek_fails(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    window.load_tracks((Track("track-001", "song.mp3", "Song"),))
+    window._playback_mode = PlaybackMode.REPEAT_ONE
+    window._set_duration(120.0)
+    backend.position_seconds = 120.0
+    backend.fail_seek = True
+
+    window._update_position()
+
+    assert window._queue_index == 0
+    assert backend.seek_calls == []
+    assert backend.play_calls == 2
+    window.close()
+
+
+def test_repeat_all_wraps_to_first_track_at_end(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    tracks = (
+        Track("track-001", "first.mp3", "First"),
+        Track("track-002", "second.mp3", "Second"),
+    )
+    window.load_tracks(tracks, index=1)
+    window._playback_mode = PlaybackMode.REPEAT_ALL
+    window._set_duration(120.0)
+    backend.position_seconds = 120.0
+
+    window._update_position()
+
+    assert window._queue_index == 0
+    assert window._current_track == tracks[0]
+    window.close()
+
+
+def test_shuffle_advances_to_a_different_track(
+    qt_application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window, _ = make_window(qt_application)
+    tracks = (
+        Track("track-001", "first.mp3", "First"),
+        Track("track-002", "second.mp3", "Second"),
+    )
+    window.load_tracks(tracks)
+    window._playback_mode = PlaybackMode.SHUFFLE
+    monkeypatch.setattr(
+        "ore_music_player.ui.main_window.random.choice",
+        lambda choices: choices[0],
+    )
+
+    window._advance_track(automatic=True)
+
+    assert window._queue_index == 1
+    window.close()
+
+
 def test_loaded_tracks_keep_current_index_when_navigating(
     qt_application: QApplication,
 ) -> None:
@@ -812,6 +1149,63 @@ def test_speed_slider_updates_current_speed_and_backend(
     window.close()
 
 
+def test_volume_slider_is_small_and_updates_backend(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    window.show()
+    qt_application.processEvents()
+
+    assert window.volume_slider.value() == 100
+    assert window.volume_slider.width() == 160
+    assert window.volume_value_label.text() == "100"
+    assert window.volume_slider.height() == window.speed_slider.height()
+    assert window.volume_slider.minimumHeight() == window.speed_slider.minimumHeight()
+    assert window.volume_slider.styleSheet() == window.speed_slider.styleSheet()
+    window.volume_slider.setValue(42)
+
+    assert backend.volume_calls[-1] == 42.0
+    assert window.volume_value_label.text() == "42"
+    window.close()
+
+
+def test_volume_setting_is_saved_and_restored(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    try:
+        window._settings.clear()
+        window.volume_slider.setValue(42)
+        window._save_left_pane_settings()
+    finally:
+        window.close()
+
+    restored_window, _ = make_window(qt_application)
+    try:
+        assert restored_window.volume_slider.value() == 42
+        assert restored_window.playback_service.state.volume == 42
+    finally:
+        settings = restored_window._settings
+        restored_window.close()
+        settings.clear()
+        settings.sync()
+
+
+def test_keyboard_seek_moves_by_five_seconds(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    window.load_tracks((Track("track-001", "song.mp3", "Song"),))
+    window._duration_seconds = 60.0
+    backend.position_seconds = 10.0
+
+    window.seek_forward()
+    window.seek_backward()
+
+    assert backend.seek_calls[-2:] == [15.0, 10.0]
+    window.close()
+
+
 def test_position_slider_seeks_only_when_released(
     qt_application: QApplication,
 ) -> None:
@@ -831,8 +1225,25 @@ def test_position_slider_seeks_only_when_released(
     window._finish_seeking()
 
     assert backend.seek_calls == [60.0]
+    assert backend.play_calls == 2
     assert window.position_label.text() == "1:00"
 
+    window.close()
+
+
+def test_position_slider_ignores_transient_backend_seek_error(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    window.load_tracks((Track("track-001", "song.mp3", "Song"),))
+    window.position_slider.setRange(0, 120_000)
+    window._start_seeking()
+    window.position_slider.setSliderPosition(60_000)
+    backend.fail_seek = True
+
+    window._finish_seeking()
+
+    assert window.playback_service.state.position_seconds == 0.0
     window.close()
 
 
@@ -843,13 +1254,33 @@ def test_seek_and_speed_sliders_share_width_and_thickness(
     window.show()
     qt_application.processEvents()
 
-    assert window.position_slider.width() == window.speed_slider.width()
+    assert window.speed_slider.width() == 160
+    assert window.speed_slider.width() >= 160
+    assert window.right_splitter.sizes()[0] <= 350
     assert (
         window.position_slider.minimumHeight()
         == window.speed_slider.minimumHeight()
     )
     assert window.position_slider.styleSheet() == window.speed_slider.styleSheet()
     assert "height: 18px" in window.position_slider.styleSheet()
+
+    window.close()
+
+
+def test_playlist_starts_immediately_below_speed_slider(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    window.show()
+    qt_application.processEvents()
+
+    playlist_view = window.right_splitter.widget(1)
+    assert playlist_view is not None
+    row_bottom = max(
+        window.speed_slider.geometry().bottom(),
+        window.volume_slider.geometry().bottom(),
+    )
+    assert playlist_view.geometry().top() <= row_bottom + 6
 
     window.close()
 

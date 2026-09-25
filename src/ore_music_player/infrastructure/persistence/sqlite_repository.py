@@ -85,23 +85,53 @@ class SQLitePlaylistRepository:
         return Playlist(
             playlist_id=playlist_row["playlist_id"],
             name=playlist_row["name"],
-            tracks=tracks
+            tracks=tracks,
         )
+
     def list_all(self) -> tuple[Playlist, ...]:
         rows = self._connection.execute(
             """
-            SELECT playlist_id
-            FROM playlists
-            ORDER BY rowid
+            SELECT
+                p.playlist_id,
+                p.name,
+                t.track_id,
+                t.path,
+                t.title,
+                t.duration_seconds
+            FROM playlists AS p
+            LEFT JOIN playlist_tracks AS pt
+                ON p.playlist_id = pt.playlist_id
+            LEFT JOIN tracks AS t
+                ON pt.track_id = t.track_id
+            ORDER BY p.rowid, pt.position
             """
         ).fetchall()
 
-        playlists = tuple(
-            playlist
-            for row in rows
-            if (playlist := self.get(row["playlist_id"])) is not None
+        playlist_data: dict[str, tuple[str, list[Track]]] = {}
+        for row in rows:
+            playlist_id = row["playlist_id"]
+            name, tracks = playlist_data.setdefault(
+                playlist_id,
+                (row["name"], []),
+            )
+            if row["track_id"] is not None:
+                tracks.append(
+                    Track(
+                        track_id=row["track_id"],
+                        path=row["path"],
+                        title=row["title"],
+                        duration_seconds=row["duration_seconds"],
+                    )
+                )
+
+        return tuple(
+            Playlist(
+                playlist_id=playlist_id,
+                name=name,
+                tracks=tuple(tracks),
+            )
+            for playlist_id, (name, tracks) in playlist_data.items()
         )
-        return playlists
 
     def save(self, playlist: Playlist) -> None:
         with self._connection:
@@ -156,7 +186,7 @@ class SQLitePlaylistRepository:
                     (
                         playlist.playlist_id,
                         track.track_id,
-                        position
+                        position,
                     ),
                 )
 
@@ -167,8 +197,9 @@ class SQLitePlaylistRepository:
                 DELETE FROM playlists
                 WHERE playlist_id = ?
                 """,
-                (playlist_id,)
+                (playlist_id,),
             )
+
     def close(self) -> None:
         self._connection.close()
 

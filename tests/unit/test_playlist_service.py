@@ -1,28 +1,8 @@
-from dataclasses import dataclass, field
-
 import pytest
+from conftest import FakePlaylistRepository
 
 from ore_music_player.application.playlist_service import PlaylistService
 from ore_music_player.domain.models import Playlist, Track
-
-
-@dataclass
-class FakePlaylistRepository:
-    playlists: dict[str, Playlist] = field(default_factory=dict)
-    deleted_ids: list[str] = field(default_factory=list)
-
-    def get(self, playlist_id: str) -> Playlist | None:
-        return self.playlists.get(playlist_id)
-
-    def list_all(self) -> tuple[Playlist, ...]:
-        return tuple(self.playlists.values())
-
-    def save(self, playlist: Playlist) -> None:
-        self.playlists[playlist.playlist_id] = playlist
-
-    def delete(self, playlist_id: str) -> None:
-        self.deleted_ids.append(playlist_id)
-        del self.playlists[playlist_id]
 
 
 def make_track(track_id: str) -> Track:
@@ -95,6 +75,21 @@ def test_update_operations_save_updated_playlist() -> None:
     assert result.name == "Warmup"
     assert result.tracks == (first,)
     assert repository.playlists["playlist-001"] == result
+
+
+def test_reorder_tracks_saves_the_final_order_once() -> None:
+    service, repository = make_service()
+    tracks = tuple(make_track(f"track-00{index}") for index in range(1, 5))
+    repository.save(Playlist("playlist-001", "Practice", tracks))
+    initial_save_calls = repository.save_calls
+
+    result = service.reorder_tracks(
+        "playlist-001",
+        tuple(track.track_id for track in reversed(tracks)),
+    )
+
+    assert result.tracks == tuple(reversed(tracks))
+    assert repository.save_calls == initial_save_calls + 1
 
 
 def test_delete_removes_existing_playlist_by_id() -> None:
