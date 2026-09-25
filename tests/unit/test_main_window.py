@@ -1,3 +1,4 @@
+import tempfile
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,8 @@ from ore_music_player.ui.main_window import (
     MainWindow,
     PlaybackMode,
 )
+
+TEST_SETTINGS_PATH = Path(tempfile.gettempdir()) / "ore-music-player-test-settings.ini"
 
 
 @dataclass
@@ -82,6 +85,16 @@ def qt_application() -> QApplication:
     return application
 
 
+@pytest.fixture(autouse=True)
+def clear_test_settings() -> None:
+    settings = QSettings(str(TEST_SETTINGS_PATH), QSettings.Format.IniFormat)
+    settings.clear()
+    settings.sync()
+    yield
+    settings.clear()
+    settings.sync()
+
+
 def make_window(
     qt_application: QApplication,
 ) -> tuple[MainWindow, FakePlaybackBackend]:
@@ -90,6 +103,7 @@ def make_window(
     window = MainWindow(
         PlaybackService(backend),
         PlaylistService(repository),
+        TEST_SETTINGS_PATH,
     )
     return window, backend
 
@@ -170,6 +184,62 @@ def test_file_tree_uses_filesystem_hierarchy_and_duration_column(
     )
 
     window.close()
+
+
+def test_file_tree_loads_duration_for_track_without_cached_duration(
+    qt_application: QApplication,
+    tmp_path,
+):
+    window, _ = make_window(qt_application)
+    audio_path = tmp_path / "uncached.wav"
+    with wave.open(str(audio_path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(100)
+        audio.writeframes(b"\0\0" * 250)
+
+    try:
+        window.load_tracks((Track("uncached", str(audio_path), "Uncached"),))
+        QTest.qWait(100)
+        index = window.file_system_model.index(str(audio_path))
+
+        assert window.file_system_model.data(index.siblingAtColumn(1)) == "0:02"
+    finally:
+        window.close()
+
+
+def test_file_tree_reuses_duration_cache_after_restart(
+    qt_application: QApplication,
+    monkeypatch,
+    tmp_path,
+):
+    import ore_music_player.ui.main_window as main_window_module
+
+    window, _ = make_window(qt_application)
+    audio_path = tmp_path / "cached.wav"
+    with wave.open(str(audio_path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(100)
+        audio.writeframes(b"\0\0" * 250)
+
+    window.load_tracks((Track("cached", str(audio_path), "Cached"),))
+    QTest.qWait(100)
+    index = window.file_system_model.index(str(audio_path))
+    assert window.file_system_model.data(index.siblingAtColumn(1)) == "0:02"
+    window.close()
+
+    monkeypatch.setattr(
+        main_window_module,
+        "read_duration_seconds",
+        lambda _path: pytest.fail("duration must be loaded from the persistent cache"),
+    )
+    restarted_window, _ = make_window(qt_application)
+    try:
+        index = restarted_window.file_system_model.index(str(audio_path))
+        assert restarted_window.file_system_model.data(index.siblingAtColumn(1)) == "0:02"
+    finally:
+        restarted_window.close()
 
 
 def test_file_tree_filter_hides_non_matching_audio_files(
@@ -269,6 +339,42 @@ def test_last_playback_state_is_restored(
         assert restored_window.playback_service.state.a_point_seconds == 3.0
         assert restored_window.playback_service.state.b_point_seconds == 8.0
         assert restored_backend.seek_calls[-1] == 12.0
+    finally:
+        settings = restored_window._settings
+        restored_window.close()
+        settings.clear()
+        settings.sync()
+
+
+def test_double_clicking_first_file_after_playback_restore_selects_clicked_file(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    first_path = tmp_path / "first.wav"
+    second_path = tmp_path / "second.wav"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+
+    window, _ = make_window(qt_application)
+    window._settings.clear()
+    window._registered_paths.clear()
+    window._set_file_tree_root(tmp_path)
+    window.load_tracks(
+        window._tracks_from_paths((first_path, second_path)),
+        index=1,
+    )
+    window._save_left_pane_settings()
+    window.close()
+
+    restored_window, restored_backend = make_window(qt_application)
+    try:
+        qt_application.processEvents()
+        first_index = restored_window.file_system_model.index(str(first_path))
+        restored_window._load_file_from_tree(first_index)
+
+        assert restored_window._current_track is not None
+        assert Path(restored_window._current_track.path) == first_path.resolve()
+        assert restored_backend.play_calls == 1
     finally:
         settings = restored_window._settings
         restored_window.close()
@@ -523,7 +629,7 @@ def test_left_pane_settings_are_saved_and_restored(
 def test_saved_left_pane_layout_is_migrated_by_75_pixels(
     qt_application: QApplication,
 ) -> None:
-    settings = QSettings("OreMusicPlayer", "OreMusicPlayer")
+    settings = QSettings(str(TEST_SETTINGS_PATH), QSettings.Format.IniFormat)
     settings.clear()
     window, _ = make_window(qt_application)
     window.show()
@@ -651,6 +757,70 @@ def test_tracks_from_paths_reads_audio_duration(
 
     assert track.duration_seconds == pytest.approx(1.0)
     window.close()
+
+
+def test_registering_unknown_duration_does_not_clear_file_tree_duration(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    audio_path = tmp_path / "known-duration.wav"
+    audio_path.write_bytes(b"audio")
+    known_duration = Track(
+        "known-duration",
+        str(audio_path),
+        "Known duration",
+        duration_seconds=12.5,
+    )
+    unknown_duration = Track(
+        "unknown-duration",
+        str(audio_path),
+        "Unknown duration",
+    )
+
+    try:
+        window._register_tracks((known_duration,))
+        window._register_tracks((unknown_duration,))
+
+        index = window.file_system_model.index(str(audio_path))
+        assert window.file_system_model.data(index.siblingAtColumn(1)) == "0:12"
+    finally:
+        window.close()
+
+
+def test_playback_selection_clears_other_selected_file_rows(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    paths = tuple(tmp_path / f"track-{index}.wav" for index in range(3))
+    for path in paths:
+        path.write_bytes(b"audio")
+    tracks = tuple(
+        Track(f"track-{index}", str(path), path.stem, duration_seconds=1.0)
+        for index, path in enumerate(paths)
+    )
+
+    try:
+        window.load_tracks(tracks, index=2)
+        selection_model = window.file_tree.selectionModel()
+        for path in paths[:2]:
+            index = window.file_system_model.index(str(path))
+            selection_model.select(
+                index,
+                QItemSelectionModel.SelectionFlag.Select
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
+
+        window._update_file_tree_selection()
+
+        selected_paths = {
+            Path(window.file_system_model.filePath(index)).resolve()
+            for index in selection_model.selectedRows()
+        }
+        assert selected_paths == {paths[2].resolve()}
+    finally:
+        window.close()
 
 
 def test_open_folder_loads_all_audio_files(
@@ -911,6 +1081,61 @@ def test_double_clicking_existing_queued_file_starts_it(
     window._load_file_from_tree(second_index)
 
     assert window._queue_index == 1
+    assert window._current_track is not None
+    assert Path(window._current_track.path) == second_path
+    assert backend.play_calls == 2
+    window.close()
+
+
+def test_repeated_double_clicks_follow_each_clicked_file(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, backend = make_window(qt_application)
+    paths = tuple(tmp_path / f"track-{index}.wav" for index in range(1, 8))
+    for path in paths:
+        path.write_bytes(path.name.encode())
+
+    window._set_file_tree_root(tmp_path)
+    window.load_tracks(
+        tuple(
+            Track(f"track-{index}", str(path), path.stem)
+            for index, path in enumerate(paths, start=1)
+        )
+    )
+
+    try:
+        for path in (paths[3], paths[4], paths[2]):
+            index = window.file_system_model.index(str(path))
+            window._load_file_from_tree(index)
+            assert window._current_track is not None
+            assert Path(window._current_track.path) == path
+
+        assert backend.play_calls == 4
+    finally:
+        window.close()
+
+
+def test_double_click_uses_clicked_index_even_with_stale_pending_path(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, backend = make_window(qt_application)
+    first_path = tmp_path / "first.wav"
+    second_path = tmp_path / "second.wav"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+
+    window._set_file_tree_root(tmp_path)
+    window.load_tracks(
+        (
+            Track("track-001", str(first_path), "First"),
+            Track("track-002", str(second_path), "Second"),
+        )
+    )
+    second_index = window.file_system_model.index(str(second_path))
+    window._load_file_from_tree(second_index)
+
     assert window._current_track is not None
     assert Path(window._current_track.path) == second_path
     assert backend.play_calls == 2

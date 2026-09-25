@@ -5,6 +5,7 @@ from typing import Any
 
 from ore_music_player.application.ports import PlaybackBackendError
 from ore_music_player.domain.models import Track
+from ore_music_player.infrastructure.playback_trace import trace_playback_event
 
 
 class LibMpvPlaybackBackend:
@@ -25,12 +26,30 @@ class LibMpvPlaybackBackend:
 
     def load(self, track: Track) -> None:
         path = Path(track.path)
+        trace_playback_event(
+            "mpv_backend_load",
+            path=str(path),
+            track_id=track.track_id,
+        )
         if not path.is_file():
             raise FileNotFoundError(f"音声ファイルが存在しません: {path}")
         self._current_track = track
         self._player.stop()
         self._player.play(str(path))
+        wait_until_playing = getattr(self._player, "wait_until_playing", None)
+        if wait_until_playing is not None:
+            try:
+                wait_until_playing(timeout=1.0)
+            except (AttributeError, RuntimeError, SystemError, TimeoutError):
+                pass
         self._player.pause = True
+        trace_playback_event(
+            "mpv_backend_loaded_state",
+            requested_path=str(path),
+            player_path=getattr(self._player, "path", None),
+            player_filename=getattr(self._player, "filename", None),
+            media_title=getattr(self._player, "media_title", None),
+        )
         self._is_stopped = False
         self._last_position_seconds = 0.0
         self._last_duration_seconds = track.duration_seconds
@@ -39,6 +58,12 @@ class LibMpvPlaybackBackend:
     def play(self) -> None:
         if self._current_track is None:
             return
+        trace_playback_event(
+            "mpv_backend_play",
+            path=self._current_track.path,
+            player_path=getattr(self._player, "path", None),
+            player_filename=getattr(self._player, "filename", None),
+        )
         if self._is_stopped:
             self._player.play(self._current_track.path)
             self._is_stopped = False

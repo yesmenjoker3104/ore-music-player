@@ -5,6 +5,7 @@ from decimal import Decimal
 from ore_music_player.application.ports import PlaybackBackend
 from ore_music_player.domain.models import Track
 from ore_music_player.domain.playback_state import PlaybackState
+from ore_music_player.infrastructure.playback_trace import trace_playback_event
 
 
 class PlaybackService:
@@ -25,6 +26,11 @@ class PlaybackService:
         return self.backend.duration_seconds
 
     def load(self, track: Track) -> PlaybackState:
+        trace_playback_event(
+            "playback_service_load",
+            path=track.path,
+            track_id=track.track_id,
+        )
         self.backend.load(track)
         self.state = self.state.load_track(track.track_id)
         self.backend.set_speed(float(self.state.speed))
@@ -33,6 +39,12 @@ class PlaybackService:
         return self.state
 
     def play(self) -> PlaybackState:
+        backend_track = getattr(self.backend, "current_track", None)
+        trace_playback_event(
+            "playback_service_play",
+            track_id=self.state.track_id,
+            backend_track=backend_track.path if backend_track is not None else None,
+        )
         self.state = self.state.play()
         self.backend.play()
         return self.state

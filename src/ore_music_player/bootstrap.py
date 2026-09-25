@@ -23,6 +23,7 @@ class ApplicationComponents:
     playback_service: PlaybackService
     playlist_repository: SQLitePlaylistRepository
     playlist_service: PlaylistService
+    data_directory: Path
     _mpv_dll_directory: Any = None
 
     def close(self) -> None:
@@ -103,5 +104,6 @@ def build_application(
         playback_service=playback_service,
         playlist_repository=playlist_repository,
         playlist_service=playlist_service,
+        data_directory=resolved_data_directory,
         _mpv_dll_directory=mpv_dll_directory,
     )
