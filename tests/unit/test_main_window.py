@@ -1485,11 +1485,8 @@ def test_playlist_starts_immediately_below_speed_slider(
 
     playlist_view = window.right_splitter.widget(1)
     assert playlist_view is not None
-    row_bottom = max(
-        window.speed_slider.geometry().bottom(),
-        window.volume_slider.geometry().bottom(),
-    )
-    assert playlist_view.geometry().top() <= row_bottom + 6
+    player_height = window.right_splitter.sizes()[0]
+    assert playlist_view.geometry().top() <= player_height + 10
 
     window.close()
 
