@@ -23,8 +23,8 @@ import pytest
 
 demucs = pytest.importorskip("demucs", reason="demucs not installed; run: pip install demucs")
 
-EXPECTED_STEMS = {"vocals", "drums", "bass", "other"}
-MODEL_NAME = "htdemucs"
+EXPECTED_STEMS = {"vocals", "drums", "bass", "other", "guitar", "piano"}
+MODEL_NAME = "htdemucs_6s"
 
 
 def _generate_sine_wav(path: Path, duration_seconds: float = 3.0, sample_rate: int = 44100) -> None:
@@ -57,14 +57,14 @@ def test_demucs_separate_module_importable() -> None:
 
 
 def test_htdemucs_stem_names_are_as_expected() -> None:
-    """htdemucs が 4ステムを持つことを確認する（初回のみモデルダウンロードが発生する）。"""
+    """htdemucs_6s が 6ステムを持つことを確認する（初回のみモデルダウンロードが発生する）。"""
     from demucs.api import Separator
     sep = Separator(MODEL_NAME)
     sources = list(sep.model.sources)
     assert set(sources) == EXPECTED_STEMS, (
         f"ステム名が変わっています: {sources}"
     )
-    print(f"\n  htdemucs stems: {sources}")
+    print(f"\n  htdemucs_6s stems: {sources}")
 
 
 def test_separation_produces_expected_stems(tmp_path: Path) -> None:
