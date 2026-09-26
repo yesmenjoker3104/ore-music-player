@@ -879,7 +879,6 @@ class MainWindow(QMainWindow):
 		playlist_view.track_selected.connect(self._set_selected_playlist_track)
 		playlist_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 		playlist_view.customContextMenuRequested.connect(self._show_playlist_context_menu)
-		player_widget.setMaximumHeight(player_widget.sizeHint().height())
 		right_splitter.addWidget(player_widget)
 		right_splitter.addWidget(playlist_view)
 		right_splitter.setStretchFactor(0, 0)
@@ -2294,7 +2293,6 @@ class MainWindow(QMainWindow):
 
 		panel = QGroupBox("ステム音量")
 		panel.setVisible(False)
-		panel.setMinimumWidth(260)
 		layout = QHBoxLayout(panel)
 
 		stem_labels = {
