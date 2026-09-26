@@ -87,11 +87,12 @@ def build_application(
     data_directory: str | Path | None = None,
     project_root: str | Path | None = None,
 ) -> ApplicationComponents:
-    resolved_root = (
-        Path(project_root)
-        if project_root is not None
-        else Path(__file__).resolve().parents[2]
-    )
+    if project_root is not None:
+        resolved_root = Path(project_root)
+    elif getattr(sys, "frozen", False):
+        resolved_root = Path(sys.executable).parent
+    else:
+        resolved_root = Path(__file__).resolve().parents[2]
     mpv_dll_directory = _configure_mpv_runtime(resolved_root)
 
     resolved_data_directory = (

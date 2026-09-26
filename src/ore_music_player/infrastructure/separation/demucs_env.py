@@ -16,6 +16,10 @@ _GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 
 def find_env_dir(project_root: Path) -> Path:
+    import sys
+    if getattr(sys, "frozen", False):
+        appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        return appdata / "OreMusicPlayer" / "demucs-env"
     vendor_dir = project_root / "vendor"
     if vendor_dir.is_dir():
         return vendor_dir / "demucs-env"

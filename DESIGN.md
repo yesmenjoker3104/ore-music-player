@@ -6,7 +6,7 @@
 
 - ドメイン層、再生制御、プレイリスト管理、SQLite永続化、PySide6 UI、起動処理は実装済み。
 - Windows上のmpv共有DLLを `vendor/mpv` に配置した環境で、アプリを起動して音声を再生できる。
-- 音源分離、パート別音量変更、コード進行分析、イコライザ、スリープタイマーは未実装で、今回の対象外とする。
+- 音源分離・ステム再生・パート別音量変更は実装済み。コード進行分析、イコライザ、スリープタイマーは今回の対象外とする。
 - 対象はデスクトップとタブレットでのタッチ操作。
 - 画面上の操作ボタンは正方形タイルとし、最大5列で配置する。
 
@@ -17,16 +17,18 @@
 | ドメインモデル | 実装済み | `Track`、`LoopRegion`、`PlaybackSettings`、速度・音量・位置の検証 |
 | 再生状態 | 実装済み | 再生、一時停止、停止、シーク、A/Bポイント、ループ状態 |
 | 再生サービス | 実装済み | `PlaybackService` と `PlaybackBackend` 契約の同期 |
-| ドメイン・サービス・UIのテスト | 実装済み | 再生状態、再生サービス、プレイリスト、SQLite、MainWindow、PlaylistViewを検証 |
+| ドメイン・サービス・UIのテスト | 実装済み | 再生状態、再生サービス、プレイリスト、SQLite、MainWindow、PlaylistView、ステムミキサー・リポジトリ・分離サービスを検証 |
 | プレイリスト | 実装済み | `Playlist`、`PlaylistService`、CRUD、複数曲追加・削除、ドラッグによる曲順変更、SQLite保存 |
-| 永続化 | 実装済み | SQLiteスキーマ、プレイリストと曲順の保存・復元、統合テスト |
-| 音声再生 | 実装済み | `python-mpv` と libmpv による再生、停止、シーク、速度変更、A/Bループ |
+| 永続化 | 実装済み | SQLiteスキーマ、プレイリストと曲順の保存・復元、ステムパスの保存、統合テスト |
+| 音声再生 | 実装済み | `python-mpv` + libmpv による通常再生。`sounddevice` + numpy によるステムリアルタイムミックス再生 |
 | アプリ起動 | 実装済み | `app.py`、`bootstrap.py`、`__main__.py`、`python -m ore_music_player` |
-| UI | 実装済み | PySide6の左右分割画面。ファイルツリー検索、複数ファイル・フォルダ読み込み、登録解除、再生操作、プレイリスト、A/B操作、音量、再生履歴に対応 |
+| UI | 実装済み | PySide6の左右分割画面。ファイルツリー検索、複数ファイル・フォルダ読み込み、登録解除、再生操作、プレイリスト、A/B操作、音量、再生履歴に対応。再生コントロールは QGroupBox でセクション区切り |
 | 設定管理 | 実装済み | INIファイルへの保存・復元。旧レジストリ設定からの自動移行 |
 | 自動アップデート | 実装済み | GitHub Releases からダウンロードして適用。404時（Releases未公開）は無視 |
 | 再生トレース | 実装済み | 操作履歴を `data/playback-trace.jsonl` へ記録 |
-| 分析 | 未実装 | 音源分離、パート音量、コード進行分析 |
+| 音源分離 | 実装済み | 右クリックメニューから Demucs（htdemucs_6s）で分離。初回時に embeddable Python 環境を自動構築 |
+| ステム再生 | 実装済み | 分離済みトラックの再生時に `StemPlaybackBackend` に切り替え。「ステム音量」ボタンから小ウィンドウで各パート音量を調整 |
+| 分析 | 未実装 | コード進行分析 |
 
 ## 現在のスキャフォールド
 
@@ -66,10 +68,17 @@ ore-music-player/
 │       │   ├── audio/
 │       │   │   ├── __init__.py
 │       │   │   ├── metadata.py
-│       │   │   └── playback_backend.py
+│       │   │   ├── playback_backend.py
+│       │   │   ├── stem_mixer.py
+│       │   │   └── stem_playback_backend.py
 │       │   ├── persistence/
 │       │   │   ├── __init__.py
 │       │   │   └── sqlite_repository.py
+│       │   ├── separation/
+│       │   │   ├── __init__.py
+│       │   │   ├── demucs_env.py
+│       │   │   ├── demucs_backend.py
+│       │   │   └── stem_repository.py
 │       │   └── analysis/
 │       │       ├── __init__.py
 │       │       ├── separation.py
@@ -78,6 +87,7 @@ ore-music-player/
 │           ├── __init__.py
 │           ├── main_window.py
 │           ├── playlist_view.py
+│           ├── separation_worker.py
 │           └── utils.py
 └── tests/
     ├── conftest.py
@@ -90,12 +100,19 @@ ore-music-player/
     │   ├── test_bootstrap.py
     │   ├── test_main_window.py
     │   ├── test_playlist_view.py
+    │   ├── test_stem_mixer.py
+    │   ├── test_stem_repository.py
+    │   ├── test_separation_service.py
     │   └── test_update_service.py
-    └── integration/
-        └── test_sqlite_repository.py
+    ├── integration/
+    │   └── test_sqlite_repository.py
+    └── probes/
+        ├── test_demucs_env.py
+        ├── test_demucs_separation.py
+        └── test_sounddevice_mixing.py
 ```
 
-`.venv/`、`.git/`、`vendor/mpv/` はローカル環境または実行用ランタイムであり、アプリケーションのソース構成には含めない。`vendor/mpv/` は `.gitignore` 対象で、実行時には利用者が対応するmpv共有DLLを配置する。空の分析ファイルは未実装のプレースホルダーであり、実装済みのファイルは上記の実装状況に従う。
+`.venv/`、`.git/`、`vendor/mpv/`、`vendor/demucs-env/` はローカル環境または実行用ランタイムであり、アプリケーションのソース構成には含めない。`vendor/mpv/` は `.gitignore` 対象で、実行時には利用者が対応するmpv共有DLLを配置する。`vendor/rubberband/` は Git LFS で管理する。空の分析ファイルは未実装のプレースホルダーであり、実装済みのファイルは上記の実装状況に従う。
 
 ## ソースファイルの責務
 
@@ -144,10 +161,15 @@ ore-music-player/
 | `src/ore_music_player/infrastructure/audio/__init__.py` | 音声バックエンド実装の公開 API をまとめる。 | 再生キューやプレイリストの管理。 |
 | `src/ore_music_player/infrastructure/audio/metadata.py` | mutagen 等を使って音声ファイルから再生時間を読み取る。 | 再生制御、プレイリスト保存。 |
 | `src/ore_music_player/infrastructure/audio/playback_backend.py` | `python-mpv` と libmpv をラップする。音声出力、シーク、A/B境界、速度変更、ピッチ補正を扱う。 | プレイリストの保存、Qt画面の操作、分析結果の表示。 |
+| `src/ore_music_player/infrastructure/audio/stem_mixer.py` | 各ステムの numpy 配列を保持し、A/B ループ・パート別音量を適用してフレーム単位でミックスする。 | 音声出力、ファイル読み込み、UI操作。 |
+| `src/ore_music_player/infrastructure/audio/stem_playback_backend.py` | `sounddevice` OutputStream と `StemMixer` を組み合わせてステム再生を実装する `PlaybackBackend`。 | Demucs 実行、プレイリスト操作。 |
 | `src/ore_music_player/infrastructure/persistence/__init__.py` | 永続化実装の公開 API をまとめる。 | SQLスキーマ以外のドメイン判断。 |
-| `src/ore_music_player/infrastructure/persistence/sqlite_repository.py` | SQLiteの接続、テーブル作成、プレイリスト、曲順、音源情報、分析結果の保存・取得を実装する。 | UIイベント、音声デコード、分析モデルの実行。 |
-| `src/ore_music_player/infrastructure/analysis/separation.py` | 将来の音源分離モデルをバックグラウンドジョブとして呼び出し、StemSet と生成ファイルのメタデータを返す。 | UIスレッドでの同期実行、プレイリスト画面の表示。 |
-| `src/ore_music_player/infrastructure/analysis/chord_analysis.py` | 将来のコード進行分析をバックグラウンドジョブとして実行し、時間軸付きの分析結果を返す。 | 再生制御、UIの直接更新。 |
+| `src/ore_music_player/infrastructure/persistence/sqlite_repository.py` | SQLiteの接続、テーブル作成、プレイリスト、曲順の保存・取得を実装する。 | UIイベント、音声デコード、分析モデルの実行。 |
+| `src/ore_music_player/infrastructure/separation/demucs_env.py` | embeddable Python のダウンロード・展開・pip 有効化・demucs インストールを担当する。frozen EXE 時は `%APPDATA%\OreMusicPlayer\demucs-env` を使用する。 | UI操作、再生制御。 |
+| `src/ore_music_player/infrastructure/separation/demucs_backend.py` | Demucs サブプロセスを呼び出して分離し、WAV を `data/stems/{track_id}/` に移動して返す。 | 環境構築、UI操作。 |
+| `src/ore_music_player/infrastructure/separation/stem_repository.py` | SQLite の `stems` テーブルへのパス保存・取得・削除を担当する。独自接続（`check_same_thread=False`）でワーカースレッドから安全に呼べる。 | 再生制御、UI操作。 |
+| `src/ore_music_player/infrastructure/analysis/separation.py` | 将来の音源分離モデルをバックグラウンドジョブとして呼び出すプレースホルダー。 | UIスレッドでの同期実行。 |
+| `src/ore_music_player/infrastructure/analysis/chord_analysis.py` | 将来のコード進行分析をバックグラウンドジョブとして実行するプレースホルダー。 | 再生制御、UIの直接更新。 |
 
 ### UI層
 
@@ -156,8 +178,9 @@ UI層は表示とユーザー入力の変換だけを担当する。SQLiteや再
 | ファイル | 担当すること | 担当しないこと |
 | --- | --- | --- |
 | `src/ore_music_player/ui/__init__.py` | UI部品の公開 API をまとめる。 | ドメイン状態の所有、DB接続。 |
-| `src/ore_music_player/ui/main_window.py` | 左右分割画面、`QFileSystemModel` と `QTreeView` によるファイルツリー、検索、ファイル名・再生時間表示、登録解除、再生操作、キュー移動、再生方法、音量、再生履歴を構成する。 | 音声データの加工、SQL、分析モデルの実行。 |
-| `src/ore_music_player/ui/playlist_view.py` | プレイリスト一覧、曲一覧、新規作成、名前変更、削除、複数曲追加、曲削除、ドラッグによる曲順変更、プレイリスト再生の操作画面を構成する。 | プレイリストの保存処理、再生エンジンの直接操作。 |
+| `src/ore_music_player/ui/main_window.py` | 左右分割画面、`QFileSystemModel` と `QTreeView` によるファイルツリー、検索、ファイル名・再生時間表示、登録解除、再生操作、キュー移動、再生方法、音量、再生履歴を構成する。再生コントロールは QGroupBox でセクション区切り。分離済みトラック再生時に「ステム音量」ボタンで `StemVolumeDialog` を開く。 | 音声データの加工、SQL、分析モデルの実行。 |
+| `src/ore_music_player/ui/playlist_view.py` | プレイリスト一覧、曲一覧（♫列で分離済みを表示）、新規作成、名前変更、削除、複数曲追加、曲削除、ドラッグによる曲順変更、プレイリスト再生の操作画面を構成する。 | プレイリストの保存処理、再生エンジンの直接操作。 |
+| `src/ore_music_player/ui/separation_worker.py` | `EnvSetupWorker`（Demucs 環境構築）と `SeparationWorker`（音源分離）を QThread として実装する。進捗は Signal で通知する。 | 分離結果の表示、再生制御。 |
 | `src/ore_music_player/ui/utils.py` | UI間で共有する再生時間表示を提供する。 | 再生状態やQtウィジェットを所有すること。 |
 
 ### テスト
@@ -173,10 +196,16 @@ UI層は表示とユーザー入力の変換だけを担当する。SQLiteや再
 | `tests/unit/test_bootstrap.py` | アプリケーション起動時の依存関係組み立てを検証する。 |
 | `tests/unit/test_main_window.py` | ファイルツリー、音声メタデータ表示、左ペイン設定の保存・復元、登録解除、再生・シーク・速度・A/B操作を検証する。 |
 | `tests/unit/test_playlist_view.py` | Qtをオフスクリーンで起動し、PlaylistViewの表示、曲追加・削除、再生要求を検証する。 |
+| `tests/unit/test_stem_mixer.py` | StemMixer の形状、シーク、A/B ループ、パート音量ゼロを音声デバイスなしで検証する。 |
+| `tests/unit/test_stem_repository.py` | `:memory:` SQLite に対してステムパスの保存・取得・削除を検証する。 |
+| `tests/unit/test_separation_service.py` | Fake ステムリポジトリを使い、`SeparationService` の has_stems・separate・delete を検証する。 |
 | `tests/unit/test_update_service.py` | バージョン比較、アーカイブ検証、GitHub 404 時の無視を検証する。 |
 | `tests/integration/test_sqlite_repository.py` | 一時SQLiteデータベースに対する保存、読み込み、更新、再起動後の復元を検証する。 |
+| `tests/probes/test_demucs_env.py` | embeddable Python 環境の構築ロジックをローカルおよびネットワーク（`PROBE_NETWORK=1`）で検証する。 |
+| `tests/probes/test_demucs_separation.py` | 実際の Demucs 環境で htdemucs_6s の分離出力ステム名と WAV 出力を確認する。 |
+| `tests/probes/test_sounddevice_mixing.py` | `sounddevice` と `StemMixer` のリアルタイムミックス・A/B ループを確認する。 |
 
-音声バックエンドの実機検証は、音声デバイスや再生エンジンが必要になるため、ドメイン単体テストとは分離する。
+音声バックエンドの実機検証は、音声デバイスや再生エンジンが必要になるため、ドメイン単体テストとは分離する。probes は通常のテスト実行には含めず、`PROBE_NETWORK=1` など環境変数でゲートする。
 
 ## 起動と依存関係の流れ
 
@@ -399,9 +428,13 @@ SQLite にプレイリスト、曲順、音源情報、分析ジョブ状態、�
 - 再生バックエンド: `python-mpv` + libmpv（Windows共有DLL `vendor/mpv/libmpv-2.dll`）
 - 設定保存: INI ファイル形式（`QSettings.Format.IniFormat`）
 - データベース: SQLite
-- ビルド: PyInstaller（`ore_music_player.spec`、`build.ps1`）、1ファイル EXE
+- ビルド: PyInstaller（`ore_music_player.spec`、`build.ps1`）、COLLECT モード EXE
 - 配布: GitHub Releases（`yesmenjoker3104/ore-music-player`、アセット名 `ore-music-player-windows-x64.zip`）
 - 速度変更時のピッチ維持: `audio_pitch_correction=True`（mpv オプション）
+- ステムミックス音声出力: `sounddevice`（PortAudio バインディング）
+- ステムファイル読み込み: `soundfile`（libsndfile バインディング）
+- rubberband バイナリ: `vendor/rubberband/`（Git LFS 管理）、EXE では `_internal/vendor/rubberband/` に同梱
+- EXE の frozen 判定: `bootstrap.py` で `sys.frozen` を確認し、data ディレクトリを `sys.executable` 隣に配置。`demucs_env.py` では frozen 時に `%APPDATA%\OreMusicPlayer\demucs-env` を使用
 
 ### 実装前に検証が必要なもの
 
@@ -428,9 +461,10 @@ SQLite にプレイリスト、曲順、音源情報、分析ジョブ状態、�
   - ステムがない曲にだけ「音源を分離」を有効にする。
   - ステムがある曲にだけ「分離キャッシュを削除」を有効にする。
 - 分離状態はプレイリスト曲一覧に列（分離）として表示する（未分離: ─、処理中: 処理中…、完了: ✓）。
-- ステムがある曲の再生中、音量スライダーの右側スペースにパート別の縦スライダーを表示する。
+- ステムがある曲の再生中、「ステム音量」ボタンが表示され、クリックすると非モーダルの小ウィンドウ（`StemVolumeDialog`）が開く。
   - ステムの種類: ボーカル・ドラム・ベース・ギター・ピアノ・その他（Demucs htdemucs_6s の6分割）
-  - ステムがない曲の再生中は縦スライダーを非表示にする。
+  - ウィンドウは常に前面表示（`WindowStaysOnTopHint`）。
+  - ステムがない曲の再生中は「ステム音量」ボタンを非表示にする。
 
 ### 再生
 
@@ -452,7 +486,7 @@ SQLite にプレイリスト、曲順、音源情報、分析ジョブ状態、�
   1. python.org から embeddable Python をダウンロード・展開
   2. get-pip.py を取得して pip を有効化
   3. `pip install demucs` を実行
-- 環境の格納先は `vendor/demucs-env/` を優先し、書き込み権限がない場合は `%APPDATA%\OreMusicPlayer\demucs-env\` にフォールバックする。
+- 環境の格納先は通常実行時は `vendor/demucs-env/` を優先し、書き込み権限がない場合または EXE として実行している場合は `%APPDATA%\OreMusicPlayer\demucs-env\` を使用する。
 - Demucs のモデルは初回分離時に自動ダウンロードされる（約200MB、`htdemucs_6s`）。
 - 「分離機能を削除」メニューで環境フォルダごと削除できる。
 
