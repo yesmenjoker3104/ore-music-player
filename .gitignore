@@ -13,3 +13,7 @@ vendor/mpv/
 vendor/demucs-env/
 probes/probe_audio.wav
 probes/probe_output/
+data/ore_music_player.sqlite3
+data/playback-trace.jsonl
+data/settings.ini
+data/stems/
