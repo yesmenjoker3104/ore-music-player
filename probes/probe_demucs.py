@@ -27,7 +27,7 @@ PROBE_DIR = Path(__file__).parent
 PROBE_AUDIO = PROBE_DIR / "probe_audio.wav"
 PROBE_OUTPUT = PROBE_DIR / "probe_output"
 EXPECTED_STEMS = {"vocals", "drums", "bass", "other"}
-MODEL_NAME = "htdemucs"
+MODEL_NAME = "htdemucs_6s"
 
 
 def generate_sine_wav(
