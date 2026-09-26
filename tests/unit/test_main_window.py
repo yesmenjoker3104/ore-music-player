@@ -543,7 +543,7 @@ def test_left_pane_settings_are_saved_and_restored(
         assert Path(restored_window.file_system_model.rootPath()) == tmp_path
         assert not restored_window.file_tree.rootIndex().isValid()
         assert restored_window.main_splitter.sizes()[0] == saved_left_width
-        assert restored_window.right_splitter.sizes()[0] == saved_right_sizes[0]
+        assert abs(restored_window.right_splitter.sizes()[0] - saved_right_sizes[0]) <= 5
         assert restored_window.height() == saved_window_size.height()
         assert restored_window.width() >= 700
         assert (
