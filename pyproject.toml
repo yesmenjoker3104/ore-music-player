@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ore-music-player"
-version = "0.1.1"
+version = "0.2.0"
 description = "A touch-friendly music practice player"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -12,6 +12,9 @@ dependencies = [
     "PySide6>=6.8,<7",
     "python-mpv>=1.0,<2",
     "mutagen>=1.47,<2",
+    "numpy>=1.26,<3",
+    "sounddevice>=0.4,<1",
+    "soundfile>=0.12,<1",
 ]
 
 [project.optional-dependencies]
