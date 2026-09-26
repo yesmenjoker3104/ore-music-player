@@ -10,3 +10,6 @@ dist/
 .coverage
 htmlcov/
 vendor/mpv/
+vendor/demucs-env/
+probes/probe_audio.wav
+probes/probe_output/
