@@ -13,6 +13,9 @@ from ore_music_player.application.separation_service import SeparationService
 from ore_music_player.infrastructure.audio.playback_backend import (
     LibMpvPlaybackBackend,
 )
+from ore_music_player.infrastructure.audio.stem_playback_backend import (
+    StemPlaybackBackend,
+)
 from ore_music_player.infrastructure.persistence.sqlite_repository import (
     SQLitePlaylistRepository,
 )
@@ -27,6 +30,7 @@ class ApplicationComponents:
     playlist_service: PlaylistService
     separation_service: SeparationService
     stem_repository: StemRepository
+    stem_playback_backend: StemPlaybackBackend
     data_directory: Path
     _mpv_dll_directory: Any = None
 
@@ -34,6 +38,7 @@ class ApplicationComponents:
         try:
             self.playback_backend.close()
         finally:
+            self.stem_playback_backend.close()
             self.playlist_repository.close()
             if self._mpv_dll_directory is not None:
                 self._mpv_dll_directory.close()
@@ -108,6 +113,7 @@ def build_application(
         stems_dir=resolved_data_directory / "stems",
         project_root=resolved_root,
     )
+    stem_playback_backend = StemPlaybackBackend(stem_repository=stem_repository)
 
     return ApplicationComponents(
         playback_backend=playback_backend,
@@ -116,6 +122,7 @@ def build_application(
         playlist_service=playlist_service,
         separation_service=separation_service,
         stem_repository=stem_repository,
+        stem_playback_backend=stem_playback_backend,
         data_directory=resolved_data_directory,
         _mpv_dll_directory=mpv_dll_directory,
     )
