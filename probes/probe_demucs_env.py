@@ -150,7 +150,7 @@ def setup_demucs_env(env_dir: Path) -> None:
     """
     print(f"\n[確認] 構築先: {env_dir}")
     if is_env_ready(env_dir):
-        print("  ✓ 環境は既に構築済みです")
+        print("  [OK] 環境は既に構築済みです")
         return
 
     python_exe = env_dir / "python.exe"
@@ -169,9 +169,9 @@ def setup_demucs_env(env_dir: Path) -> None:
     print("\n[4] 動作確認")
     info = verify_demucs(env_dir)
     if info["ok"]:
-        print(f"  ✓ demucs {info['version']} が呼び出せます")
+        print(f"  [OK] demucs {info['version']} が呼び出せます")
     else:
-        print(f"  ✗ demucs の呼び出しに失敗: {info['error']}")
+        print(f"  [NG] demucs の呼び出しに失敗: {info['error']}")
         raise RuntimeError("環境構築後の確認に失敗しました")
 
 
@@ -203,17 +203,17 @@ def print_env_status(env_dir: Path) -> None:
     python_exe = env_dir / "python.exe"
     pth_files = list(env_dir.glob("python*._pth")) if env_dir.is_dir() else []
 
-    print(f"  python.exe: {'✓' if python_exe.is_file() else '✗ (なし)'}")
+    print(f"  python.exe: {'[OK]' if python_exe.is_file() else '[NG] (なし)'}")
     for pth in pth_files:
         content = pth.read_text(encoding="utf-8")
         site_ok = "import site" in content and "#import site" not in content
-        print(f"  {pth.name}: import site {'✓' if site_ok else '✗ (無効)'}")
+        print(f"  {pth.name}: import site {'[OK]' if site_ok else '[NG] (無効)'}")
 
     info = verify_demucs(env_dir)
     if info["ok"]:
-        print(f"  demucs: ✓ version {info['version']}")
+        print(f"  demucs: [OK] version {info['version']}")
     else:
-        print(f"  demucs: ✗ ({info['error'][:80] if info['error'] else 'not found'})")
+        print(f"  demucs: [NG] ({info['error'][:80] if info['error'] else 'not found'})")
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +239,9 @@ def main() -> None:
     try:
         setup_demucs_env(env_dir)
         print_env_status(env_dir)
-        print("\n✓ Probe ③ 完了")
+        print("\n[OK] Probe ③ 完了")
     except Exception as exc:
-        print(f"\n✗ エラー: {exc}")
+        print(f"\n[NG] エラー: {exc}")
         sys.exit(1)
 
 
