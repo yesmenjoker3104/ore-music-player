@@ -5,8 +5,11 @@ from pathlib import Path
 
 
 class StemRepository:
-    def __init__(self, connection: sqlite3.Connection) -> None:
-        self._conn = connection
+    def __init__(self, database_path: str | Path) -> None:
+        self._conn = sqlite3.connect(
+            str(database_path), check_same_thread=False
+        )
+        self._conn.row_factory = sqlite3.Row
         self._create_schema()
 
     def _create_schema(self) -> None:
