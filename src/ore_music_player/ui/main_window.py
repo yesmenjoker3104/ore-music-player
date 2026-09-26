@@ -42,7 +42,9 @@ from PySide6.QtWidgets import (
 	QLabel,
 	QLineEdit,
 	QMainWindow,
+	QMenu,
 	QMessageBox,
+	QProgressDialog,
 	QPushButton,
 	QSizePolicy,
 	QSlider,
@@ -57,6 +59,7 @@ from PySide6.QtWidgets import (
 from ore_music_player.application.playback_service import PlaybackService
 from ore_music_player.application.playlist_service import PlaylistService
 from ore_music_player.application.ports import PlaybackBackendError
+from ore_music_player.application.separation_service import SeparationService
 from ore_music_player.domain.models import (
 	DEFAULT_PLAYBACK_SPEED,
 	MAX_PLAYBACK_SPEED,
@@ -80,6 +83,7 @@ from ore_music_player.ui.playlist_view import (
 	PlaylistTrackSelection,
 	PlaylistView,
 )
+from ore_music_player.ui.separation_worker import EnvSetupWorker, SeparationWorker
 from ore_music_player.ui.utils import format_duration
 
 TILE_BUTTON_SIZE = 112
@@ -502,10 +506,14 @@ class MainWindow(QMainWindow):
 		playback_service: PlaybackService,
 		playlist_service: PlaylistService,
 		settings_path: str | Path | None = None,
+		separation_service: SeparationService | None = None,
 	) -> None:
 		super().__init__()
 		self.playback_service = playback_service
 		self.playlist_service = playlist_service
+		self._separation_service = separation_service
+		self._separation_worker: SeparationWorker | None = None
+		self._env_setup_worker: EnvSetupWorker | None = None
 		self._settings = load_settings(
 			settings_path or Path.cwd() / "data" / "settings.ini"
 		)
@@ -861,6 +869,8 @@ class MainWindow(QMainWindow):
 		self.playlist_view = playlist_view
 		playlist_view.play_requested.connect(self.load_playlist_track_selection)
 		playlist_view.track_selected.connect(self._set_selected_playlist_track)
+		playlist_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+		playlist_view.customContextMenuRequested.connect(self._show_playlist_context_menu)
 		player_widget.setMaximumHeight(player_widget.sizeHint().height())
 		right_splitter.addWidget(player_widget)
 		right_splitter.addWidget(playlist_view)
@@ -2167,3 +2177,100 @@ class MainWindow(QMainWindow):
 	def change_volume(self, slider_value: int) -> None:
 		self.volume_value_label.setText(str(slider_value))
 		self.playback_service.set_volume(float(slider_value))
+
+	# ------------------------------------------------------------------
+	# 音源分離
+	# ------------------------------------------------------------------
+
+	def _show_playlist_context_menu(self, pos) -> None:
+		if self._separation_service is None:
+			return
+		selection = self.playlist_view.selected_track_selection()
+		if selection is None:
+			return
+		track = selection.tracks[selection.index]
+
+		has_stems = self._separation_service.has_stems(track.track_id)
+		menu = QMenu(self)
+		separate_action = menu.addAction("音源を分離")
+		separate_action.setEnabled(not has_stems)
+		delete_action = menu.addAction("分離キャッシュを削除")
+		delete_action.setEnabled(has_stems)
+
+		action = menu.exec(self.playlist_view.mapToGlobal(pos))
+		if action == separate_action:
+			self._request_separation(track)
+		elif action == delete_action:
+			self._separation_service.delete_stems(track.track_id)
+			QMessageBox.information(
+				self, "削除完了", f"{track.title} の分離キャッシュを削除しました。"
+			)
+
+	def _request_separation(self, track) -> None:
+		if self._separation_service is None:
+			return
+		if not self._separation_service.is_env_ready():
+			reply = QMessageBox.question(
+				self,
+				"Demucs 環境のセットアップ",
+				"音源分離には Demucs 環境が必要です（約600MBのダウンロード）。\n"
+				"セットアップしますか？",
+				QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+			)
+			if reply != QMessageBox.StandardButton.Yes:
+				return
+			self._start_env_setup(lambda: self._start_separation(track))
+		else:
+			self._start_separation(track)
+
+	def _start_env_setup(self, on_done) -> None:
+		if self._separation_service is None:
+			return
+		dlg = QProgressDialog("Demucs 環境を構築中...", None, 0, 0, self)
+		dlg.setWindowTitle("セットアップ中")
+		dlg.setWindowModality(Qt.WindowModality.WindowModal)
+		dlg.setCancelButton(None)
+		dlg.show()
+
+		worker = EnvSetupWorker(self._separation_service)
+		self._env_setup_worker = worker
+
+		def _on_finished():
+			dlg.close()
+			on_done()
+
+		def _on_failed(msg: str):
+			dlg.close()
+			QMessageBox.critical(
+				self, "セットアップ失敗", f"Demucs 環境の構築に失敗しました:\n{msg}"
+			)
+
+		worker.progress.connect(dlg.setLabelText)
+		worker.finished.connect(_on_finished)
+		worker.failed.connect(_on_failed)
+		worker.start()
+
+	def _start_separation(self, track) -> None:
+		if self._separation_service is None:
+			return
+		dlg = QProgressDialog(f"{track.title} を分離中...", None, 0, 0, self)
+		dlg.setWindowTitle("音源分離中")
+		dlg.setWindowModality(Qt.WindowModality.WindowModal)
+		dlg.setCancelButton(None)
+		dlg.show()
+
+		worker = SeparationWorker(self._separation_service, track)
+		self._separation_worker = worker
+
+		def _on_finished(track_id: str):
+			dlg.close()
+			QMessageBox.information(self, "分離完了", f"{track.title} の音源分離が完了しました。")
+
+		def _on_failed(track_id: str, msg: str):
+			dlg.close()
+			QMessageBox.critical(self, "分離失敗", f"音源分離に失敗しました:\n{msg}")
+
+		worker.progress.connect(dlg.setLabelText)
+		worker.finished.connect(_on_finished)
+		worker.failed.connect(_on_failed)
+		worker.start()

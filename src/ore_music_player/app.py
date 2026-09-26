@@ -38,6 +38,7 @@ def run() -> int:
 			components.playback_service,
 			components.playlist_service,
 			components.data_directory / "settings.ini",
+			components.separation_service,
 		)
 		window.setWindowIcon(qt_application.windowIcon())
 		qt_application.aboutToQuit.connect(window._save_left_pane_settings)
