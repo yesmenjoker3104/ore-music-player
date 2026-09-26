@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
 project_root = Path(SPECPATH)
@@ -12,11 +12,20 @@ if not any(path.name in {"libmpv-2.dll", "mpv-2.dll", "mpv-1.dll"} for path in m
         "Place the mpv shared runtime there before building."
     )
 
+rubberband_directory = project_root / "vendor" / "rubberband"
+rubberband_binaries = [
+    (str(path), "vendor/rubberband")
+    for path in rubberband_directory.glob("*")
+    if path.suffix in {".exe", ".dll"}
+]
+
 
 a = Analysis(
     [str(project_root / "src" / "ore_music_player" / "__main__.py")],
     pathex=[str(project_root / "src")],
-    binaries=[(str(path), "vendor/mpv") for path in mpv_dlls],
+    binaries=[
+        (str(path), "vendor/mpv") for path in mpv_dlls
+    ] + rubberband_binaries,
     datas=[
         (
             str(project_root / "src" / "ore_music_player" / "assets"),
@@ -26,8 +35,11 @@ a = Analysis(
             str(project_root / "src" / "ore_music_player" / "infrastructure" / "apply_update.ps1"),
             "ore_music_player/infrastructure",
         ),
-    ],
-    hiddenimports=collect_submodules("mpv"),
+    ] + collect_data_files("_sounddevice_data") + collect_data_files("_soundfile_data"),
+    hiddenimports=(
+        collect_submodules("mpv")
+        + ["sounddevice", "soundfile", "numpy", "cffi", "_cffi_backend"]
+    ),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
