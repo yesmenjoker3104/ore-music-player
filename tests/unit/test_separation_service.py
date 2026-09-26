@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,9 +12,7 @@ from ore_music_player.infrastructure.separation.stem_repository import StemRepos
 
 @pytest.fixture
 def repo() -> StemRepository:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    return StemRepository(conn)
+    return StemRepository(":memory:")
 
 
 @pytest.fixture

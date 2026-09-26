@@ -107,7 +107,7 @@ def build_application(
         resolved_data_directory / "ore_music_player.sqlite3"
     )
     playlist_service = PlaylistService(playlist_repository)
-    stem_repository = StemRepository(playlist_repository._connection)
+    stem_repository = StemRepository(resolved_data_directory / "ore_music_player.sqlite3")
     separation_service = SeparationService(
         stem_repository=stem_repository,
         stems_dir=resolved_data_directory / "stems",
