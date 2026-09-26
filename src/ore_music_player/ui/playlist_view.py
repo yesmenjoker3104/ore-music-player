@@ -108,17 +108,20 @@ class TrackTableWidget(QTableWidget):
 				self.removeRow(row)
 		self.rows_reordered.emit()
 
+	_STEM_COLUMN_WIDTH = 28
+
 	def resizeEvent(self, event) -> None:
 		super().resizeEvent(event)
 		header = self.horizontalHeader()
 		available_width = header.viewport().width()
 		if available_width <= 0:
 			return
-		name_width = int(available_width * self._NAME_COLUMN_RATIO)
-		if header.sectionSize(0) != name_width:
-			header.resizeSection(0, name_width)
-		if header.sectionSize(1) != available_width - name_width:
-			header.resizeSection(1, available_width - name_width)
+		remaining = max(0, available_width - self._STEM_COLUMN_WIDTH)
+		name_width = int(remaining * self._NAME_COLUMN_RATIO)
+		duration_width = remaining - name_width
+		header.resizeSection(0, name_width)
+		header.resizeSection(1, duration_width)
+		header.resizeSection(2, self._STEM_COLUMN_WIDTH)
 
 
 class PlaylistView(QWidget):
@@ -171,8 +174,8 @@ class PlaylistView(QWidget):
 		playlist_buttons.addWidget(delete_button, 0, 2)
 		playlist_layout.addLayout(playlist_buttons)
 
-		self.track_list = TrackTableWidget(0, 2)
-		self.track_list.setHorizontalHeaderLabels(["曲名", "再生時間"])
+		self.track_list = TrackTableWidget(0, 3)
+		self.track_list.setHorizontalHeaderLabels(["曲名", "再生時間", "♫"])
 		self.track_list.horizontalHeader().setSectionResizeMode(
 			QHeaderView.ResizeMode.Fixed
 		)
@@ -315,6 +318,18 @@ class PlaylistView(QWidget):
 					playing_foreground if is_playing else None,
 				)
 
+	def update_stem_status(self, track_id: str, has_stems: bool) -> None:
+		for row in range(self.track_list.rowCount()):
+			item = self.track_list.item(row, 0)
+			if item is not None and item.data(Qt.ItemDataRole.UserRole) == track_id:
+				stem_item = self.track_list.item(row, 2)
+				if stem_item is None:
+					stem_item = QTableWidgetItem()
+					self.track_list.setItem(row, 2, stem_item)
+				stem_item.setText("♫" if has_stems else "")
+				stem_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+				break
+
 	def _select_playlist(self, row: int) -> None:
 		self.track_selected.emit(None)
 		self.track_list.setRowCount(0)
@@ -340,6 +355,10 @@ class PlaylistView(QWidget):
 				1,
 				QTableWidgetItem(format_duration(duration_seconds)),
 			)
+			stem_item = QTableWidgetItem("")
+			stem_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+			stem_item.setFlags(stem_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+			self.track_list.setItem(track_row, 2, stem_item)
 		self._update_playing_highlights()
 
 	def _playlist_selection_changed(self) -> None:

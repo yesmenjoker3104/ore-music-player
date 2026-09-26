@@ -862,11 +862,11 @@ class MainWindow(QMainWindow):
 		self.change_volume(self.volume_slider.value())
 		speed_row_layout.addLayout(volume_layout)
 		speed_row_layout.addStretch(1)
+		speed_row_layout.addWidget(self._build_stem_panel())
 		bars_layout.addLayout(speed_row_layout, 1, 0, 1, 4)
 
 		player_layout.addLayout(bars_layout)
 		self._update_speed_label(self.speed_slider.value())
-		player_layout.addWidget(self._build_stem_panel())
 
 		self._position_timer = QTimer(self)
 		self._position_timer.setInterval(250)
@@ -2273,6 +2273,7 @@ class MainWindow(QMainWindow):
 
 		def _on_finished(track_id: str):
 			dlg.close()
+			self.playlist_view.update_stem_status(track_id, True)
 			QMessageBox.information(self, "分離完了", f"{track.title} の音源分離が完了しました。")
 
 		def _on_failed(track_id: str, msg: str):
@@ -2309,7 +2310,7 @@ class MainWindow(QMainWindow):
 			slider = QSlider(_Qt.Orientation.Vertical)
 			slider.setRange(0, 100)
 			slider.setValue(100)
-			slider.setFixedHeight(80)
+			slider.setFixedHeight(50)
 			slider.valueChanged.connect(
 				lambda val, s=stem: self._on_stem_volume_changed(s, val)
 			)
