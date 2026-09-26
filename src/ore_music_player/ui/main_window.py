@@ -2294,6 +2294,7 @@ class MainWindow(QMainWindow):
 
 		panel = QGroupBox("ステム音量")
 		panel.setVisible(False)
+		panel.setMinimumWidth(260)
 		layout = QHBoxLayout(panel)
 
 		stem_labels = {
