@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -128,9 +129,14 @@ class PlaylistView(QWidget):
 	play_requested = Signal(object)
 	track_selected = Signal(object)
 
-	def __init__(self, playlist_service: PlaylistService) -> None:
+	def __init__(
+		self,
+		playlist_service: PlaylistService,
+		has_stems_fn: Callable[[str], bool] | None = None,
+	) -> None:
 		super().__init__()
 		self.playlist_service = playlist_service
+		self._has_stems_fn = has_stems_fn
 		self._playlists: tuple[Playlist, ...] = ()
 		self._active_playlist_id: str | None = None
 		self._playing_playlist_id: str | None = None
@@ -355,7 +361,8 @@ class PlaylistView(QWidget):
 				1,
 				QTableWidgetItem(format_duration(duration_seconds)),
 			)
-			stem_item = QTableWidgetItem("")
+			has = self._has_stems_fn is not None and self._has_stems_fn(track.track_id)
+			stem_item = QTableWidgetItem("♫" if has else "")
 			stem_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 			stem_item.setFlags(stem_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 			self.track_list.setItem(track_row, 2, stem_item)

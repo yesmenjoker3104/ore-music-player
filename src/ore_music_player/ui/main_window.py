@@ -4,6 +4,7 @@ import json
 import random
 import shutil
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
@@ -35,6 +36,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
 	QAbstractItemView,
 	QComboBox,
+	QDialog,
 	QFileDialog,
 	QFileSystemModel,
 	QGridLayout,
@@ -491,6 +493,50 @@ class UpdateWorker(QThread):
 			self.failed.emit(str(error))
 
 
+class StemVolumeDialog(QDialog):
+	_STEM_LABELS: dict[str, str] = {
+		"vocals": "ボーカル",
+		"drums": "ドラム",
+		"bass": "ベース",
+		"guitar": "ギター",
+		"piano": "ピアノ",
+		"other": "その他",
+	}
+
+	def __init__(self, parent: QWidget | None = None) -> None:
+		super().__init__(parent)
+		self.setWindowTitle("ステム音量")
+		self.setWindowFlags(
+			Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint
+		)
+		self._sliders: dict[str, QSlider] = {}
+		layout = QHBoxLayout(self)
+		layout.setSpacing(12)
+		layout.setContentsMargins(12, 12, 12, 12)
+		for stem, label_text in self._STEM_LABELS.items():
+			col = QVBoxLayout()
+			col.setSpacing(4)
+			slider = QSlider(Qt.Orientation.Vertical)
+			slider.setRange(0, 100)
+			slider.setValue(100)
+			slider.setFixedHeight(100)
+			self._sliders[stem] = slider
+			col.addWidget(slider, alignment=Qt.AlignmentFlag.AlignHCenter)
+			col.addWidget(QLabel(label_text), alignment=Qt.AlignmentFlag.AlignHCenter)
+			layout.addLayout(col)
+		self.setMinimumWidth(300)
+
+	def connect_volume_changed(self, fn: Callable[[str, int], None]) -> None:
+		for stem, slider in self._sliders.items():
+			slider.valueChanged.connect(lambda val, s=stem: fn(s, val))
+
+	def reset_all(self) -> None:
+		for slider in self._sliders.values():
+			slider.blockSignals(True)
+			slider.setValue(100)
+			slider.blockSignals(False)
+
+
 class MainWindow(QMainWindow):
 	_SPLITTER_STATE_KEY = "leftPane/splitterState"
 	_RIGHT_SPLITTER_STATE_KEY = "rightPane/splitterState"
@@ -764,10 +810,6 @@ class MainWindow(QMainWindow):
 		player_layout.addLayout(button_grid)
 		player_layout.setAlignment(button_grid, Qt.AlignmentFlag.AlignLeft)
 
-		bars_layout = QGridLayout()
-		bars_layout.setHorizontalSpacing(8)
-		bars_layout.setColumnStretch(2, 1)
-
 		self.position_label = QLabel("0:00")
 		self.duration_label = QLabel("--:--")
 		self.position_slider = PositionSlider()
@@ -778,21 +820,16 @@ class MainWindow(QMainWindow):
 		self.position_slider.sliderPressed.connect(self._start_seeking)
 		self.position_slider.sliderMoved.connect(self._preview_seek)
 		self.position_slider.sliderReleased.connect(self._finish_seeking)
-		bars_layout.addWidget(QLabel("再生位置"), 0, 0)
-		bars_layout.addWidget(self.position_label, 0, 1)
-		bars_layout.addWidget(self.position_slider, 0, 2)
-		bars_layout.addWidget(self.duration_label, 0, 3)
 
-		self.speed_label = QLabel("再生速度")
-		self.speed_label.setSizePolicy(
-			QSizePolicy.Policy.Fixed,
-			QSizePolicy.Policy.Fixed,
-		)
+		pos_box = QGroupBox("再生位置")
+		pos_inner = QHBoxLayout(pos_box)
+		pos_inner.setContentsMargins(8, 4, 8, 4)
+		pos_inner.setSpacing(8)
+		pos_inner.addWidget(self.position_label)
+		pos_inner.addWidget(self.position_slider, 1)
+		pos_inner.addWidget(self.duration_label)
+
 		min_speed_label = QLabel(f"{MIN_PLAYBACK_SPEED:.2f}x")
-		min_speed_label.setSizePolicy(
-			QSizePolicy.Policy.Fixed,
-			QSizePolicy.Policy.Fixed,
-		)
 		self.speed_slider = QSlider()
 		self._configure_slider(self.speed_slider)
 		self.speed_slider.setFixedWidth(SPEED_SLIDER_WIDTH)
@@ -800,10 +837,7 @@ class MainWindow(QMainWindow):
 			(MAX_PLAYBACK_SPEED - MIN_PLAYBACK_SPEED)
 			/ PLAYBACK_SPEED_STEP
 		)
-		self.speed_slider.setRange(
-			0,
-			speed_steps,
-		)
+		self.speed_slider.setRange(0, speed_steps)
 		self.speed_slider.setValue(
 			int(
 				(DEFAULT_PLAYBACK_SPEED - MIN_PLAYBACK_SPEED)
@@ -813,37 +847,17 @@ class MainWindow(QMainWindow):
 		self.speed_slider.valueChanged.connect(self.change_speed)
 		self.speed_min_label = min_speed_label
 		self.speed_current_label = QLabel()
-		self.speed_current_label.setSizePolicy(
-			QSizePolicy.Policy.Fixed,
-			QSizePolicy.Policy.Fixed,
-		)
-		speed_row_layout = QHBoxLayout()
-		speed_row_layout.setContentsMargins(0, 0, 0, 0)
-		speed_row_layout.setSpacing(8)
-		speed_row_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-		speed_row_layout.addWidget(self.speed_label)
-		speed_row_layout.addWidget(min_speed_label)
-		speed_row_layout.addWidget(self.speed_slider)
-		speed_row_layout.addWidget(self.speed_current_label)
 
-		self.volume_label = QLabel("音量")
-		self.volume_label.setAlignment(
-			Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-		)
-		self.volume_label.setSizePolicy(
-			QSizePolicy.Policy.Fixed,
-			QSizePolicy.Policy.Fixed,
-		)
+		speed_box = QGroupBox("再生速度")
+		speed_inner = QHBoxLayout(speed_box)
+		speed_inner.setContentsMargins(8, 4, 8, 4)
+		speed_inner.setSpacing(8)
+		speed_inner.addWidget(min_speed_label)
+		speed_inner.addWidget(self.speed_slider)
+		speed_inner.addWidget(self.speed_current_label)
+
 		self.volume_min_label = QLabel("0")
-		self.volume_min_label.setSizePolicy(
-			QSizePolicy.Policy.Fixed,
-			QSizePolicy.Policy.Fixed,
-		)
 		self.volume_value_label = QLabel()
-		self.volume_value_label.setSizePolicy(
-			QSizePolicy.Policy.Fixed,
-			QSizePolicy.Policy.Fixed,
-		)
 		self.volume_slider = QSlider(Qt.Orientation.Horizontal)
 		self._configure_slider(self.volume_slider)
 		self.volume_slider.setRange(0, 100)
@@ -852,20 +866,30 @@ class MainWindow(QMainWindow):
 		self.volume_slider.setFixedWidth(SPEED_SLIDER_WIDTH)
 		self.volume_slider.setToolTip("音量")
 		self.volume_slider.valueChanged.connect(self.change_volume)
-		volume_layout = QHBoxLayout()
-		volume_layout.setContentsMargins(0, 0, 0, 0)
-		volume_layout.setSpacing(8)
-		volume_layout.addWidget(self.volume_label)
-		volume_layout.addWidget(self.volume_min_label)
-		volume_layout.addWidget(self.volume_slider)
-		volume_layout.addWidget(self.volume_value_label)
 		self.change_volume(self.volume_slider.value())
-		speed_row_layout.addLayout(volume_layout)
-		speed_row_layout.addStretch(1)
-		speed_row_layout.addWidget(self._build_stem_panel())
-		bars_layout.addLayout(speed_row_layout, 1, 0, 1, 4)
 
-		player_layout.addLayout(bars_layout)
+		volume_box = QGroupBox("音量")
+		volume_inner = QHBoxLayout(volume_box)
+		volume_inner.setContentsMargins(8, 4, 8, 4)
+		volume_inner.setSpacing(8)
+		volume_inner.addWidget(self.volume_min_label)
+		volume_inner.addWidget(self.volume_slider)
+		volume_inner.addWidget(self.volume_value_label)
+
+		self._stem_volume_button = QPushButton("ステム音量")
+		self._stem_volume_button.setVisible(False)
+		self._stem_volume_button.clicked.connect(self._open_stem_volume_dialog)
+
+		controls_row = QHBoxLayout()
+		controls_row.setContentsMargins(0, 0, 0, 0)
+		controls_row.setSpacing(8)
+		controls_row.addWidget(speed_box)
+		controls_row.addWidget(volume_box)
+		controls_row.addWidget(self._stem_volume_button)
+		controls_row.addStretch(1)
+
+		player_layout.addWidget(pos_box)
+		player_layout.addLayout(controls_row)
 		self._update_speed_label(self.speed_slider.value())
 
 		self._position_timer = QTimer(self)
@@ -873,7 +897,12 @@ class MainWindow(QMainWindow):
 		self._position_timer.timeout.connect(self._update_position)
 		self._position_timer.start()
 
-		playlist_view = PlaylistView(playlist_service)
+		has_stems_fn = (
+			self._separation_service.has_stems
+			if self._separation_service is not None
+			else None
+		)
+		playlist_view = PlaylistView(playlist_service, has_stems_fn=has_stems_fn)
 		self.playlist_view = playlist_view
 		playlist_view.play_requested.connect(self.load_playlist_track_selection)
 		playlist_view.track_selected.connect(self._set_selected_playlist_track)
@@ -2288,42 +2317,17 @@ class MainWindow(QMainWindow):
 	# ステム再生
 	# ------------------------------------------------------------------
 
-	def _build_stem_panel(self) -> QWidget:
-		from PySide6.QtCore import Qt as _Qt
-
-		panel = QGroupBox("ステム音量")
-		panel.setVisible(False)
-		layout = QHBoxLayout(panel)
-
-		stem_labels = {
-			"vocals": "ボーカル",
-			"drums": "ドラム",
-			"bass": "ベース",
-			"guitar": "ギター",
-			"piano": "ピアノ",
-			"other": "その他",
-		}
-		self._stem_sliders: dict[str, QSlider] = {}
-		for stem, label_text in stem_labels.items():
-			col = QVBoxLayout()
-			slider = QSlider(_Qt.Orientation.Vertical)
-			slider.setRange(0, 100)
-			slider.setValue(100)
-			slider.setFixedHeight(50)
-			slider.valueChanged.connect(
-				lambda val, s=stem: self._on_stem_volume_changed(s, val)
-			)
-			self._stem_sliders[stem] = slider
-			col.addWidget(slider, alignment=_Qt.AlignmentFlag.AlignHCenter)
-			col.addWidget(QLabel(label_text), alignment=_Qt.AlignmentFlag.AlignHCenter)
-			layout.addLayout(col)
-
-		self._stem_panel = panel
-		return panel
-
 	def _on_stem_volume_changed(self, stem_name: str, value: int) -> None:
 		if self._stem_backend is not None:
 			self._stem_backend.set_stem_volume(stem_name, value / 100.0)
+
+	def _open_stem_volume_dialog(self) -> None:
+		if not hasattr(self, "_stem_volume_dialog") or self._stem_volume_dialog is None:
+			self._stem_volume_dialog = StemVolumeDialog(self)
+			self._stem_volume_dialog.connect_volume_changed(self._on_stem_volume_changed)
+		self._stem_volume_dialog.show()
+		self._stem_volume_dialog.raise_()
+		self._stem_volume_dialog.activateWindow()
 
 	def _switch_playback_backend(self, track: Track) -> None:
 		from ore_music_player.infrastructure.audio.playback_backend import (
@@ -2338,12 +2342,10 @@ class MainWindow(QMainWindow):
 		if use_stem:
 			self.playback_service.backend = self._stem_backend
 			self._stem_backend.load(track)
-			if hasattr(self, "_stem_panel"):
-				self._stem_panel.setVisible(True)
-				for slider in self._stem_sliders.values():
-					slider.setValue(100)
+			self._stem_volume_button.setVisible(True)
+			if hasattr(self, "_stem_volume_dialog") and self._stem_volume_dialog is not None:
+				self._stem_volume_dialog.reset_all()
 		else:
 			if not isinstance(self.playback_service.backend, LibMpvPlaybackBackend):
 				self.playback_service.backend = self._mpv_backend
-			if hasattr(self, "_stem_panel"):
-				self._stem_panel.setVisible(False)
+			self._stem_volume_button.setVisible(False)
