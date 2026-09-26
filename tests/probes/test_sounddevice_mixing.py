@@ -17,7 +17,7 @@ import pytest
 sounddevice = pytest.importorskip("sounddevice", reason="sounddevice not installed")
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parents[2] / "probes"))
-from probe_sounddevice import CHANNELS, SAMPLE_RATE, StemMixer, generate_sine_stems
+from probe_sounddevice import CHANNELS, SAMPLE_RATE, StemMixer  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # フィクスチャ
@@ -165,7 +165,11 @@ def test_mix_chunk_returns_silence_after_finished(mixer: StemMixer) -> None:
 # ---------------------------------------------------------------------------
 
 def test_pyrubberband_time_stretch_preserves_length_ratio() -> None:
-    pyrubberband = pytest.importorskip("pyrubberband", reason="pyrubberband not installed")
+    import shutil
+
+    pytest.importorskip("pyrubberband", reason="pyrubberband not installed")
+    if shutil.which("rubberband") is None:
+        pytest.skip("rubberband CLI not in PATH")
     import pyrubberband as rb
 
     n = SAMPLE_RATE * 2  # 2秒
@@ -177,4 +181,6 @@ def test_pyrubberband_time_stretch_preserves_length_ratio() -> None:
     assert abs(len(stretched) - expected_len) < SAMPLE_RATE * 0.05, (
         f"伸縮後の長さ {len(stretched)} が期待値 {expected_len:.0f} と乖離しています"
     )
-    print(f"\n  2秒 × 速度{speed} → {len(stretched)/SAMPLE_RATE:.2f}秒（期待: {expected_len/SAMPLE_RATE:.2f}秒）")
+    ratio = len(stretched) / SAMPLE_RATE
+    expected_ratio = expected_len / SAMPLE_RATE
+    print(f"\n  2秒 × 速度{speed} → {ratio:.2f}秒（期待: {expected_ratio:.2f}秒）")

@@ -39,6 +39,7 @@ def run() -> int:
 			components.playlist_service,
 			components.data_directory / "settings.ini",
 			components.separation_service,
+			stem_playback_backend=components.stem_playback_backend,
 		)
 		window.setWindowIcon(qt_application.windowIcon())
 		qt_application.aboutToQuit.connect(window._save_left_pane_settings)

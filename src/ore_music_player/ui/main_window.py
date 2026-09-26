@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 	QFileDialog,
 	QFileSystemModel,
 	QGridLayout,
+	QGroupBox,
 	QHBoxLayout,
 	QLabel,
 	QLineEdit,
@@ -68,6 +69,9 @@ from ore_music_player.domain.models import (
 	Track,
 )
 from ore_music_player.infrastructure.audio.metadata import read_duration_seconds
+from ore_music_player.infrastructure.audio.stem_playback_backend import (
+	StemPlaybackBackend,
+)
 from ore_music_player.infrastructure.playback_trace import trace_playback_event
 from ore_music_player.infrastructure.settings import load_settings
 from ore_music_player.infrastructure.update_service import (
@@ -507,11 +511,14 @@ class MainWindow(QMainWindow):
 		playlist_service: PlaylistService,
 		settings_path: str | Path | None = None,
 		separation_service: SeparationService | None = None,
+		stem_playback_backend: StemPlaybackBackend | None = None,
 	) -> None:
 		super().__init__()
 		self.playback_service = playback_service
 		self.playlist_service = playlist_service
 		self._separation_service = separation_service
+		self._stem_backend = stem_playback_backend
+		self._mpv_backend = playback_service.backend
 		self._separation_worker: SeparationWorker | None = None
 		self._env_setup_worker: EnvSetupWorker | None = None
 		self._settings = load_settings(
@@ -859,6 +866,7 @@ class MainWindow(QMainWindow):
 
 		player_layout.addLayout(bars_layout)
 		self._update_speed_label(self.speed_slider.value())
+		player_layout.addWidget(self._build_stem_panel())
 
 		self._position_timer = QTimer(self)
 		self._position_timer.setInterval(250)
@@ -1832,6 +1840,7 @@ class MainWindow(QMainWindow):
 			self._current_track.track_id,
 		)
 		self._update_file_tree_selection()
+		self._switch_playback_backend(self._current_track)
 		self.playback_service.load(self._current_track)
 		self.track_label.setText(self._current_track.title)
 		self._update_ab_button_labels()
@@ -2274,3 +2283,67 @@ class MainWindow(QMainWindow):
 		worker.finished.connect(_on_finished)
 		worker.failed.connect(_on_failed)
 		worker.start()
+
+	# ------------------------------------------------------------------
+	# ステム再生
+	# ------------------------------------------------------------------
+
+	def _build_stem_panel(self) -> QWidget:
+		from PySide6.QtCore import Qt as _Qt
+
+		panel = QGroupBox("ステム音量")
+		panel.setVisible(False)
+		layout = QHBoxLayout(panel)
+
+		stem_labels = {
+			"vocals": "ボーカル",
+			"drums": "ドラム",
+			"bass": "ベース",
+			"guitar": "ギター",
+			"piano": "ピアノ",
+			"other": "その他",
+		}
+		self._stem_sliders: dict[str, QSlider] = {}
+		for stem, label_text in stem_labels.items():
+			col = QVBoxLayout()
+			slider = QSlider(_Qt.Orientation.Vertical)
+			slider.setRange(0, 100)
+			slider.setValue(100)
+			slider.setFixedHeight(80)
+			slider.valueChanged.connect(
+				lambda val, s=stem: self._on_stem_volume_changed(s, val)
+			)
+			self._stem_sliders[stem] = slider
+			col.addWidget(slider, alignment=_Qt.AlignmentFlag.AlignHCenter)
+			col.addWidget(QLabel(label_text), alignment=_Qt.AlignmentFlag.AlignHCenter)
+			layout.addLayout(col)
+
+		self._stem_panel = panel
+		return panel
+
+	def _on_stem_volume_changed(self, stem_name: str, value: int) -> None:
+		if self._stem_backend is not None:
+			self._stem_backend.set_stem_volume(stem_name, value / 100.0)
+
+	def _switch_playback_backend(self, track: Track) -> None:
+		from ore_music_player.infrastructure.audio.playback_backend import (
+			LibMpvPlaybackBackend,
+		)
+
+		use_stem = (
+			self._separation_service is not None
+			and self._stem_backend is not None
+			and self._separation_service.has_stems(track.track_id)
+		)
+		if use_stem:
+			self.playback_service.backend = self._stem_backend
+			self._stem_backend.load(track)
+			if hasattr(self, "_stem_panel"):
+				self._stem_panel.setVisible(True)
+				for slider in self._stem_sliders.values():
+					slider.setValue(100)
+		else:
+			if not isinstance(self.playback_service.backend, LibMpvPlaybackBackend):
+				self.playback_service.backend = self._mpv_backend
+			if hasattr(self, "_stem_panel"):
+				self._stem_panel.setVisible(False)
