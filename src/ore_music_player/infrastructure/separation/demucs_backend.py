@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -41,7 +42,7 @@ def separate(
         stems: dict[str, Path] = {}
         for wav in stem_source.glob("*.wav"):
             dest = output_dir / wav.name
-            wav.rename(dest)
+            shutil.move(str(wav), dest)
             stems[wav.stem] = dest
 
     return stems
