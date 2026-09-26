@@ -74,6 +74,12 @@ def setup_env(
         subprocess.check_call([str(python_exe), str(get_pip)], cwd=str(env_dir))
         get_pip.unlink()
 
+    _progress("numpy をインストール中...")
+    subprocess.check_call([
+        str(python_exe), "-m", "pip", "install",
+        "--no-warn-script-location", "numpy",
+    ])
+
     _progress("demucs をインストール中（数分かかります）...")
     subprocess.check_call([
         str(python_exe), "-m", "pip", "install",
