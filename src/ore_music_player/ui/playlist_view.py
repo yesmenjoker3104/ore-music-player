@@ -249,6 +249,20 @@ class PlaylistView(QWidget):
 		self._select_playlist(self.playlist_list.currentRow())
 		self._update_playing_highlights()
 
+	def select_playlist(self, playlist_id: str) -> bool:
+		row = next(
+			(
+				index
+				for index, playlist in enumerate(self._playlists)
+				if playlist.playlist_id == playlist_id
+			),
+			-1,
+		)
+		if row < 0:
+			return False
+		self.playlist_list.setCurrentRow(row)
+		return True
+
 	def selected_playlist_id(self) -> str | None:
 		row = self.playlist_list.currentRow()
 		if 0 <= row < len(self._playlists):

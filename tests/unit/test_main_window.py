@@ -1,6 +1,8 @@
+import json
 import tempfile
 import wave
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -43,6 +45,7 @@ class FakePlaybackBackend:
     position_seconds: float = 0.0
     duration_seconds: float | None = None
     fail_seek: bool = False
+    stem_volume_values: dict[str, float] = field(default_factory=dict)
 
     def load(self, track) -> None:
         pass
@@ -75,6 +78,21 @@ class FakePlaybackBackend:
     ) -> None:
         self.loop_calls.append((start_seconds, end_seconds))
 
+    @property
+    def stem_volumes(self) -> dict[str, float]:
+        return dict(self.stem_volume_values)
+
+    def set_stem_volume(self, stem_name: str, volume: float) -> None:
+        self.stem_volume_values[stem_name] = volume
+
+
+@dataclass
+class FakeSeparationService:
+    stem_track_ids: set[str] = field(default_factory=set)
+
+    def has_stems(self, track_id: str) -> bool:
+        return track_id in self.stem_track_ids
+
 
 @pytest.fixture(scope="session")
 def qt_application() -> QApplication:
@@ -106,6 +124,203 @@ def make_window(
         TEST_SETTINGS_PATH,
     )
     return window, backend
+
+
+def test_switching_to_stems_stops_normal_playback(
+    qt_application: QApplication,
+) -> None:
+    normal_backend = FakePlaybackBackend()
+    stem_backend = FakePlaybackBackend()
+    window = MainWindow(
+        PlaybackService(normal_backend),
+        PlaylistService(FakePlaylistRepository()),
+        TEST_SETTINGS_PATH,
+        separation_service=FakeSeparationService({"track-with-stems"}),
+        stem_playback_backend=stem_backend,
+    )
+    normal_backend.play()
+
+    window._switch_playback_backend(
+        Track("track-with-stems", "song.wav", "Song"),
+    )
+
+    assert normal_backend.stop_calls == 1
+    assert window.playback_service.backend is stem_backend
+
+
+def test_playback_session_is_saved_and_restored(
+    qt_application: QApplication,
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "first.wav"
+    second_path = tmp_path / "second.wav"
+    first_path.write_bytes(b"audio")
+    second_path.write_bytes(b"audio")
+    repository = FakePlaylistRepository()
+    playlist_service = PlaylistService(repository)
+    first_backend = FakePlaybackBackend()
+    first_window = MainWindow(
+        PlaybackService(first_backend),
+        playlist_service,
+        TEST_SETTINGS_PATH,
+    )
+    first_track = Track("track-001", str(first_path), "First", duration_seconds=120.0)
+    second_track = Track("track-002", str(second_path), "Second", duration_seconds=90.0)
+    playlist_service.create("playlist-001", "Practice")
+    playlist_service.add_track("playlist-001", first_track)
+    playlist_service.add_track("playlist-001", second_track)
+    first_window.playlist_view.refresh()
+    first_window.load_tracks(
+        (first_track, second_track),
+        index=1,
+        playlist_id="playlist-001",
+    )
+    first_window.playback_service.set_speed("0.75")
+    first_window.playback_service.set_a(10.0)
+    first_window.playback_service.set_b(40.0)
+    first_window.playback_service.enable_loop()
+    first_window._playback_mode = PlaybackMode.REPEAT_ONE
+    first_window.playback_mode_button.setText(
+        first_window._playback_mode_text(first_window._playback_mode)
+    )
+    first_backend.position_seconds = 25.0
+    first_window.close()
+
+    restored_backend = FakePlaybackBackend()
+    restored_window = MainWindow(
+        PlaybackService(restored_backend),
+        PlaylistService(repository),
+        TEST_SETTINGS_PATH,
+    )
+    try:
+        assert [track.track_id for track in restored_window._queue] == [
+            "track-001",
+            "track-002",
+        ]
+        assert restored_window._queue_index == 1
+        assert restored_window._current_track is not None
+        assert restored_window._current_track.track_id == "track-002"
+        assert restored_window._playback_playlist_id == "playlist-001"
+        assert restored_window.playlist_view.selected_playlist_id() == "playlist-001"
+        assert restored_window.playback_service.state.speed == Decimal("0.75")
+        assert restored_window.playback_service.state.a_point_seconds == 10.0
+        assert restored_window.playback_service.state.b_point_seconds == 40.0
+        assert restored_window.playback_service.state.loop_enabled is True
+        assert restored_backend.position_seconds == 25.0
+        assert restored_backend.play_calls == 0
+        assert restored_window._playback_mode is PlaybackMode.REPEAT_ONE
+    finally:
+        restored_window.close()
+
+
+def test_stem_volumes_are_saved_and_restored(
+    qt_application: QApplication,
+    tmp_path: Path,
+) -> None:
+    audio_path = tmp_path / "stem-track.wav"
+    audio_path.write_bytes(b"audio")
+    repository = FakePlaylistRepository()
+    separation_service = FakeSeparationService({"stem-track"})
+    first_stem_backend = FakePlaybackBackend()
+    first_window = MainWindow(
+        PlaybackService(FakePlaybackBackend()),
+        PlaylistService(repository),
+        TEST_SETTINGS_PATH,
+        separation_service=separation_service,
+        stem_playback_backend=first_stem_backend,
+    )
+    first_window.load_tracks(
+        (Track("stem-track", str(audio_path), "Stem Track"),),
+    )
+    first_window._on_stem_volume_changed("vocals", 25)
+    first_window._on_stem_volume_changed("drums", 60)
+    first_window.close()
+
+    restored_stem_backend = FakePlaybackBackend()
+    restored_window = MainWindow(
+        PlaybackService(FakePlaybackBackend()),
+        PlaylistService(repository),
+        TEST_SETTINGS_PATH,
+        separation_service=separation_service,
+        stem_playback_backend=restored_stem_backend,
+    )
+    try:
+        assert restored_window._stem_volume_values == {
+            "vocals": 0.25,
+            "drums": 0.6,
+        }
+        assert restored_stem_backend.stem_volumes == {
+            "vocals": 0.25,
+            "drums": 0.6,
+        }
+    finally:
+        restored_window.close()
+
+
+def test_invalid_playback_session_is_ignored(
+    qt_application: QApplication,
+) -> None:
+    settings = QSettings(str(TEST_SETTINGS_PATH), QSettings.Format.IniFormat)
+    settings.setValue(MainWindow._PLAYBACK_SESSION_KEY, "not-json")
+    settings.sync()
+
+    window, backend = make_window(qt_application)
+    try:
+        assert window._queue == ()
+        assert backend.play_calls == 0
+    finally:
+        window.close()
+
+
+def test_missing_tracks_are_removed_from_playback_session(
+    qt_application: QApplication,
+    tmp_path: Path,
+) -> None:
+    missing_path = tmp_path / "missing.wav"
+    settings = QSettings(str(TEST_SETTINGS_PATH), QSettings.Format.IniFormat)
+    settings.setValue(
+        MainWindow._PLAYBACK_SESSION_KEY,
+        json.dumps(
+            {
+                "version": MainWindow._PLAYBACK_SESSION_VERSION,
+                "queue": [
+                    {
+                        "track_id": "missing-track",
+                        "path": str(missing_path),
+                        "title": "Missing",
+                    }
+                ],
+                "queue_index": 0,
+                "current_track_id": "missing-track",
+            },
+        ),
+    )
+    settings.sync()
+
+    window, backend = make_window(qt_application)
+    try:
+        assert window._queue == ()
+        assert backend.play_calls == 0
+    finally:
+        window.close()
+
+
+def test_unplayed_registered_tracks_do_not_create_playback_session(
+    qt_application: QApplication,
+    tmp_path: Path,
+) -> None:
+    audio_path = tmp_path / "registered-only.wav"
+    audio_path.write_bytes(b"audio")
+    window, _ = make_window(qt_application)
+    window._settings.clear()
+    window._registered_paths.clear()
+    window._append_tracks(window._tracks_from_paths((audio_path,)))
+    window.playback_service.stop()
+    window._current_track = None
+    window.close()
+
+    settings = QSettings(str(TEST_SETTINGS_PATH), QSettings.Format.IniFormat)
+    assert not settings.contains(MainWindow._PLAYBACK_SESSION_KEY)
 
 
 def test_file_operations_are_in_file_menu_not_tile_buttons(

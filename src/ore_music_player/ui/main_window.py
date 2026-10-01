@@ -7,6 +7,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import replace
 from enum import StrEnum
+from math import isfinite
 from pathlib import Path
 from uuid import uuid4
 
@@ -531,6 +532,13 @@ class StemVolumeDialog(QDialog):
 			slider.setValue(100)
 			slider.blockSignals(False)
 
+	def set_volumes(self, volumes: dict[str, float]) -> None:
+		for stem, slider in self._sliders.items():
+			value = round(max(0.0, min(1.0, volumes.get(stem, 1.0))) * 100)
+			slider.blockSignals(True)
+			slider.setValue(value)
+			slider.blockSignals(False)
+
 
 class MainWindow(QMainWindow):
 	_SPLITTER_STATE_KEY = "leftPane/splitterState"
@@ -545,6 +553,8 @@ class MainWindow(QMainWindow):
 	_DRIVE_ROOTS_GROUP = "leftPane/driveRoots"
 	_VOLUME_KEY = "playback/volume"
 	_RECENT_TRACKS_KEY = "playback/recentTracks"
+	_PLAYBACK_SESSION_KEY = "playback/session"
+	_PLAYBACK_SESSION_VERSION = 1
 
 	def __init__(
 		self,
@@ -559,6 +569,7 @@ class MainWindow(QMainWindow):
 		self.playlist_service = playlist_service
 		self._separation_service = separation_service
 		self._stem_backend = stem_playback_backend
+		self._stem_volume_values: dict[str, float] = {}
 		self._mpv_backend = playback_service.backend
 		self._separation_worker: SeparationWorker | None = None
 		self._env_setup_worker: EnvSetupWorker | None = None
@@ -914,6 +925,7 @@ class MainWindow(QMainWindow):
 		self._restore_window_geometry()
 		self._create_shortcuts()
 		self._restore_splitter_state()
+		self._restore_playback_session()
 
 	def showEvent(self, event) -> None:
 		super().showEvent(event)
@@ -1011,7 +1023,288 @@ class MainWindow(QMainWindow):
 		)
 		self._settings.setValue(self._VOLUME_KEY, self.volume_slider.value())
 		self._save_registered_paths()
+		self._save_playback_session()
 		self._settings.sync()
+
+	def _save_playback_session(self) -> None:
+		if (
+			self._current_track is None
+			or not self._queue
+			or not 0 <= self._queue_index < len(self._queue)
+		):
+			self._settings.remove(self._PLAYBACK_SESSION_KEY)
+			return
+
+		try:
+			position = float(self.playback_service.position_seconds)
+		except (AttributeError, RuntimeError, SystemError, TypeError, ValueError):
+			position = self.playback_service.state.position_seconds
+		if not isfinite(position) or position < 0:
+			position = 0.0
+
+		stem_volumes = dict(self._stem_volume_values)
+		if self._stem_backend is not None:
+			stem_volumes.update(self._stem_backend.stem_volumes)
+
+		current_track = self._current_track or self._queue[self._queue_index]
+		session = {
+			"version": self._PLAYBACK_SESSION_VERSION,
+			"queue": [
+				{
+					"track_id": track.track_id,
+					"path": str(self._normalize_path(track.path)),
+					"title": track.title,
+					"duration_seconds": track.duration_seconds,
+				}
+				for track in self._queue
+			],
+			"queue_index": self._queue_index,
+			"current_track_id": current_track.track_id,
+			"position_seconds": position,
+			"speed": str(self.playback_service.state.speed),
+			"a_point_seconds": self.playback_service.state.a_point_seconds,
+			"b_point_seconds": self.playback_service.state.b_point_seconds,
+			"loop_enabled": self.playback_service.state.loop_enabled,
+			"playback_mode": self._playback_mode.value,
+			"playlist_id": self._playback_playlist_id,
+			"stem_volumes": stem_volumes,
+		}
+		self._settings.setValue(
+			self._PLAYBACK_SESSION_KEY,
+			json.dumps(session, ensure_ascii=False),
+		)
+
+	@staticmethod
+	def _session_nonnegative_float(value: object) -> float | None:
+		if value is None or isinstance(value, bool):
+			return None
+		try:
+			number = float(value)
+		except (TypeError, ValueError):
+			return None
+		if not isfinite(number) or number < 0:
+			return None
+		return number
+
+	def _load_playback_session(self) -> dict[str, object] | None:
+		raw_value = self._settings.value(
+			self._PLAYBACK_SESSION_KEY,
+			"",
+			type=str,
+		)
+		if not raw_value:
+			return None
+		try:
+			session = json.loads(raw_value)
+		except (TypeError, ValueError):
+			return None
+		if (
+			not isinstance(session, dict)
+			or session.get("version") != self._PLAYBACK_SESSION_VERSION
+		):
+			return None
+		return session
+
+	def _tracks_from_playback_session(
+		self,
+		session: dict[str, object],
+	) -> tuple[Track, ...]:
+		raw_queue = session.get("queue")
+		if not isinstance(raw_queue, list):
+			return ()
+
+		tracks: list[Track] = []
+		for raw_track in raw_queue:
+			if not isinstance(raw_track, dict):
+				continue
+			track_id = raw_track.get("track_id")
+			path_value = raw_track.get("path")
+			if not isinstance(track_id, str) or not track_id.strip():
+				continue
+			if not isinstance(path_value, str) or not path_value.strip():
+				continue
+			path = self._normalize_path(path_value)
+			if not path.is_file() or path.suffix.lower() not in SUPPORTED_AUDIO_SUFFIXES:
+				continue
+			title = raw_track.get("title")
+			if not isinstance(title, str) or not title.strip():
+				title = path.stem
+			duration = self._session_nonnegative_float(
+				raw_track.get("duration_seconds")
+			)
+			try:
+				tracks.append(
+					Track(
+						track_id=track_id,
+						path=str(path),
+						title=title,
+						duration_seconds=duration,
+					)
+				)
+			except ValueError:
+				continue
+		return tuple(tracks)
+
+	def _restore_playback_session(self) -> None:
+		session = self._load_playback_session()
+		if session is None:
+			return
+		queue = self._tracks_from_playback_session(session)
+		if not queue:
+			return
+
+		queue_index = session.get("queue_index")
+		if not isinstance(queue_index, int) or isinstance(queue_index, bool):
+			queue_index = 0
+		current_track_id = session.get("current_track_id")
+		if isinstance(current_track_id, str):
+			queue_index = next(
+				(
+					index
+					for index, track in enumerate(queue)
+					if track.track_id == current_track_id
+				),
+				queue_index,
+			)
+		queue_index = max(0, min(queue_index, len(queue) - 1))
+
+		self._queue = queue
+		self._queue_index = queue_index
+		self._register_tracks(queue)
+		self._update_file_tree_visibility()
+
+		playlist_id = session.get("playlist_id")
+		if (
+			isinstance(playlist_id, str)
+			and playlist_id.strip()
+			and self.playlist_view.select_playlist(playlist_id)
+		):
+			self._playback_playlist_id = playlist_id
+		else:
+			self._playback_playlist_id = None
+
+		self._load_current_track(autoplay=False)
+		self._restore_playback_settings(session)
+
+	def _restore_playback_settings(self, session: dict[str, object]) -> None:
+		mode = session.get("playback_mode")
+		if isinstance(mode, str):
+			try:
+				self._playback_mode = PlaybackMode(mode)
+			except ValueError:
+				pass
+		self.playback_mode_button.setText(
+			self._playback_mode_text(self._playback_mode)
+		)
+
+		speed = self._session_nonnegative_float(session.get("speed"))
+		if speed is not None:
+			try:
+				self.playback_service.set_speed(speed)
+			except (ValueError, RuntimeError, SystemError):
+				pass
+			else:
+				slider_value = round(
+					(speed - float(MIN_PLAYBACK_SPEED))
+					/ float(PLAYBACK_SPEED_STEP)
+				)
+				if 0 <= slider_value <= self.speed_slider.maximum():
+					self.speed_slider.blockSignals(True)
+					self.speed_slider.setValue(slider_value)
+					self.speed_slider.blockSignals(False)
+					self._update_speed_label(slider_value)
+
+		self._restore_loop_settings(session)
+		self._restore_position(session)
+		self._restore_stem_volumes(session)
+
+	def _restore_loop_settings(self, session: dict[str, object]) -> None:
+		duration = self._current_track.duration_seconds if self._current_track else None
+		try:
+			backend_duration = self.playback_service.duration_seconds
+		except (AttributeError, RuntimeError, SystemError):
+			backend_duration = None
+		if backend_duration is not None and backend_duration > 0:
+			duration = backend_duration
+
+		a_point = self._session_nonnegative_float(session.get("a_point_seconds"))
+		b_point = self._session_nonnegative_float(session.get("b_point_seconds"))
+		if duration is not None and duration > 0:
+			if a_point is not None:
+				a_point = min(a_point, duration)
+			if b_point is not None:
+				b_point = min(b_point, duration)
+
+		if a_point is not None:
+			try:
+				self.playback_service.set_a(a_point)
+			except ValueError:
+				a_point = None
+		if (
+			b_point is not None
+			and a_point is not None
+			and a_point < b_point
+		):
+			try:
+				self.playback_service.set_b(b_point)
+			except ValueError:
+				b_point = None
+		else:
+			b_point = None
+
+		if (
+			session.get("loop_enabled") is True
+			and a_point is not None
+			and b_point is not None
+		):
+			self.playback_service.enable_loop()
+		self._update_ab_button_labels()
+		self._update_loop_button()
+
+	def _restore_position(self, session: dict[str, object]) -> None:
+		position = self._session_nonnegative_float(session.get("position_seconds"))
+		if position is None:
+			position = 0.0
+		duration = self._current_track.duration_seconds if self._current_track else None
+		try:
+			backend_duration = self.playback_service.duration_seconds
+		except (AttributeError, RuntimeError, SystemError):
+			backend_duration = None
+		if backend_duration is not None and backend_duration > 0:
+			duration = backend_duration
+		if duration is not None and duration > 0:
+			if self._current_track is not None:
+				self._set_duration(duration)
+			position = min(position, duration)
+		try:
+			self.playback_service.seek(position)
+		except (PlaybackBackendError, ValueError, RuntimeError, SystemError):
+			return
+		self.position_slider.blockSignals(True)
+		self.position_slider.setValue(round(position * SEEK_SCALE))
+		self.position_slider.blockSignals(False)
+		self.position_label.setText(self._format_time(position))
+
+	def _restore_stem_volumes(self, session: dict[str, object]) -> None:
+		raw_volumes = session.get("stem_volumes")
+		if not isinstance(raw_volumes, dict):
+			return
+		for stem_name, raw_volume in raw_volumes.items():
+			if not isinstance(stem_name, str):
+				continue
+			volume = self._session_nonnegative_float(raw_volume)
+			if volume is None or volume > 1.0:
+				continue
+			self._stem_volume_values[stem_name] = volume
+		self._apply_stem_volume_values()
+
+	def _apply_stem_volume_values(self) -> None:
+		if self._stem_backend is None:
+			return
+		for stem_name, volume in self._stem_volume_values.items():
+			self._stem_backend.set_stem_volume(stem_name, volume)
+		if hasattr(self, "_stem_volume_dialog") and self._stem_volume_dialog is not None:
+			self._stem_volume_dialog.set_volumes(self._stem_volume_values)
 
 	def closeEvent(self, event) -> None:
 		self._position_timer.stop()
@@ -2313,6 +2606,7 @@ class MainWindow(QMainWindow):
 	# ------------------------------------------------------------------
 
 	def _on_stem_volume_changed(self, stem_name: str, value: int) -> None:
+		self._stem_volume_values[stem_name] = value / 100.0
 		if self._stem_backend is not None:
 			self._stem_backend.set_stem_volume(stem_name, value / 100.0)
 
@@ -2320,6 +2614,10 @@ class MainWindow(QMainWindow):
 		if not hasattr(self, "_stem_volume_dialog") or self._stem_volume_dialog is None:
 			self._stem_volume_dialog = StemVolumeDialog(self)
 			self._stem_volume_dialog.connect_volume_changed(self._on_stem_volume_changed)
+		if self._stem_backend is not None:
+			self._stem_volume_dialog.set_volumes(
+				self._stem_backend.stem_volumes or self._stem_volume_values
+			)
 		self._stem_volume_dialog.show()
 		self._stem_volume_dialog.raise_()
 		self._stem_volume_dialog.activateWindow()
@@ -2335,12 +2633,17 @@ class MainWindow(QMainWindow):
 			and self._separation_service.has_stems(track.track_id)
 		)
 		if use_stem:
+			if self.playback_service.backend is not self._stem_backend:
+				self.playback_service.backend.stop()
 			self.playback_service.backend = self._stem_backend
 			self._stem_backend.load(track)
+			self._apply_stem_volume_values()
 			self._stem_volume_button.setVisible(True)
 			if hasattr(self, "_stem_volume_dialog") and self._stem_volume_dialog is not None:
-				self._stem_volume_dialog.reset_all()
+				self._stem_volume_dialog.set_volumes(self._stem_volume_values)
 		else:
+			if self.playback_service.backend is not self._mpv_backend:
+				self.playback_service.backend.stop()
 			if not isinstance(self.playback_service.backend, LibMpvPlaybackBackend):
 				self.playback_service.backend = self._mpv_backend
 			self._stem_volume_button.setVisible(False)
