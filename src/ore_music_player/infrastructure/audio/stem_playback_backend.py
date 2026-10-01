@@ -123,7 +123,14 @@ class StemPlaybackBackend:
 
     def set_stem_volume(self, stem_name: str, volume: float) -> None:
         if self._mixer is not None:
-            self._mixer.volumes[stem_name] = max(0.0, min(1.0, volume))
+            if stem_name in self._mixer.volumes:
+                self._mixer.volumes[stem_name] = max(0.0, min(1.0, volume))
+
+    @property
+    def stem_volumes(self) -> dict[str, float]:
+        if self._mixer is None:
+            return {}
+        return dict(self._mixer.volumes)
 
     def stem_names(self) -> list[str]:
         if self._mixer is None:
