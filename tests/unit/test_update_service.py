@@ -1,3 +1,4 @@
+import json
 import urllib.error
 import urllib.response
 from io import BytesIO
@@ -12,7 +13,10 @@ from ore_music_player.infrastructure.update_service import (
     _version_key,
     fetch_latest_release,
     is_newer_version,
+    log_update_event,
     prepare_update,
+    start_update_process,
+    update_log_path,
 )
 
 
@@ -47,3 +51,33 @@ def test_prepare_update_rejects_archive_without_executable(tmp_path: Path) -> No
 
     with pytest.raises(RuntimeError, match="does not contain"):
         prepare_update(archive_path, tmp_path / "staged")
+
+
+def test_log_update_event_writes_json_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    log_update_event("download_failed", archive=tmp_path / "update.zip")
+
+    log_file = update_log_path()
+    payload = json.loads(log_file.read_text(encoding="utf-8").splitlines()[-1])
+    assert payload["event"] == "download_failed"
+    assert payload["archive"] == str(tmp_path / "update.zip")
+
+
+def test_start_update_process_passes_log_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr("ore_music_player.infrastructure.update_service.sys.platform", "win32")
+
+    with patch("ore_music_player.infrastructure.update_service.subprocess.Popen") as popen:
+        start_update_process(
+            tmp_path / "staged" / "ore-music-player",
+            tmp_path / "ore-music-player",
+            tmp_path / "apply_update.ps1",
+        )
+
+    command = popen.call_args.args[0]
+    assert "-LogPath" in command
+    assert str(update_log_path()) in command

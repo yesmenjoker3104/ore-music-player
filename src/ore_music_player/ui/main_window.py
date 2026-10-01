@@ -4,6 +4,7 @@ import json
 import random
 import shutil
 import sys
+import traceback
 from collections.abc import Callable
 from dataclasses import replace
 from enum import StrEnum
@@ -81,9 +82,11 @@ from ore_music_player.infrastructure.update_service import (
 	ReleaseInfo,
 	download_release,
 	fetch_latest_release,
+	log_update_event,
 	make_update_workspace,
 	prepare_update,
 	start_update_process,
+	update_log_path,
 	update_script_path,
 )
 from ore_music_player.ui.playlist_view import (
@@ -468,6 +471,7 @@ class UpdateWorker(QThread):
 
 	def run(self) -> None:
 		workspace: Path | None = None
+		log_update_event("worker_started")
 		try:
 			release = fetch_latest_release()
 			if release is None:
@@ -484,6 +488,11 @@ class UpdateWorker(QThread):
 			)
 			self.update_ready.emit((release, staged_application))
 		except Exception as error:
+			log_update_event(
+				"worker_failed",
+				error=str(error),
+				traceback=traceback.format_exc(),
+			)
 			if workspace is not None:
 				shutil.rmtree(workspace, ignore_errors=True)
 			self.failed.emit(str(error))
@@ -1385,7 +1394,11 @@ class MainWindow(QMainWindow):
 			self._show_update_error(str(error))
 
 	def _show_update_error(self, message: str) -> None:
-		QMessageBox.critical(self, "更新失敗", f"更新を確認できませんでした。\n{message}")
+		QMessageBox.critical(
+			self,
+			"更新失敗",
+			f"更新を確認できませんでした。\n{message}\n\nログ: {update_log_path()}",
+		)
 
 	def _update_finished(self) -> None:
 		self.check_update_action.setEnabled(True)
