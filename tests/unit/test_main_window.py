@@ -378,7 +378,11 @@ def test_registered_folder_roots_merge_nested_folder_under_parent(
     )
     window.file_system_model.set_root_paths(window._registered_folders)
 
-    assert window.file_system_model._root_paths == (pc_folder, music_folder)
+    assert window.file_system_model._root_paths == (
+        pc_folder,
+        music_folder,
+        nested_folder,
+    )
     window.close()
 
 
@@ -1514,3 +1518,92 @@ def test_slider_renders_a_thick_track(
     assert max(painted_rows) - min(painted_rows) + 1 >= SLIDER_GROOVE_HEIGHT
 
     slider.close()
+
+
+def test_registered_folder_roots_keep_nested_folder_and_parent(
+    qt_application: QApplication,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    window._settings.clear()
+    window._registered_paths.clear()
+    window._registered_folders.clear()
+
+    parent_folder = tmp_path / "05_MUSIC"
+    nested_folder = parent_folder / "band" / "OT"
+
+    nested_folder.mkdir(parents=True)
+
+    window._registered_folders.update(
+        {
+            parent_folder,
+            nested_folder,
+        }
+    )
+
+    window.file_system_model.set_root_paths(
+        window._registered_folders
+    )
+
+    assert window.file_system_model._root_paths == (
+        parent_folder,
+        nested_folder,
+    )
+
+    assert parent_folder in window._registered_folders
+    assert nested_folder in window._registered_folders
+
+    window.close()
+
+def test_open_parent_folder_keeps_child_folder_registration(
+    qt_application: QApplication,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+
+    window._settings.clear()
+    window._registered_paths.clear()
+    window._registered_folders.clear()
+    window._queue = ()
+
+    parent_folder = tmp_path / "music"
+    child_folder = parent_folder / "band"
+
+    parent_folder.mkdir()
+    child_folder.mkdir()
+
+    child_audio = child_folder / "practice.wav"
+    parent_audio = parent_folder / "other.wav"
+
+    child_audio.write_bytes(b"child")
+    parent_audio.write_bytes(b"parent")
+
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: str(child_folder),
+    )
+    window.open_folder()
+
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *_args: str(parent_folder),
+    )
+    window.open_folder()
+
+    assert child_folder in window._registered_folders
+    assert parent_folder in window._registered_folders
+
+    assert child_audio in {
+        Path(track.path)
+        for track in window._queue
+    }
+
+    assert parent_audio in {
+        Path(track.path)
+        for track in window._queue
+    }
+
+    window.close()

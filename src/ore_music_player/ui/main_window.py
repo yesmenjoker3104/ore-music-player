@@ -283,17 +283,12 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 
 	def set_root_paths(self, paths: set[Path]) -> None:
 		self.beginResetModel()
+
 		normalized_paths = {Path(path).absolute() for path in paths}
+
 		self._root_paths = tuple(
 			sorted(
-				(
-					path
-					for path in normalized_paths
-					if not any(
-						path != other and other in path.parents
-						for other in normalized_paths
-					)
-				),
+				normalized_paths,
 				key=lambda path: str(path).casefold(),
 			)
 		)
