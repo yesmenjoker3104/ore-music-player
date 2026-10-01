@@ -84,8 +84,8 @@ Exe版では、ファイルメニューの「更新を確認」からGitHub Rele
 次のReleaseを作るときは、`src/ore_music_player/version.py`と`pyproject.toml`のバージョンを同じ値へ変更してから、同じ値の`v`タグをpushしてください。
 
 ```powershell
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.2.2
+git push origin v0.2.2
 ```
 
 mpvランタイムはライセンスとサイズの都合でこのリポジトリには含めていません。GitHub Actionsでビルドする場合は、CIが参照できる方法で`vendor/mpv/`を用意してください。個人用リポジトリなら管理対象に追加する方法もありますが、mpvの配布条件を確認してから行ってください。
