@@ -77,15 +77,15 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Exe版では、ファイルメニューの「更新を確認」からGitHub Releaseの最新版を確認できます。新しいバージョンがある場合は、ZIPをダウンロードしてアプリを再起動し、プレイリストなどの`data`を引き継いで更新します。更新処理の詳細ログは`%LOCALAPPDATA%\OreMusicPlayer\update.log`にJSONL形式で記録されます。開発版を`python -m ore_music_player`で起動している場合、更新確認は利用できません。
+Exe版では、ヘルプメニューの「バージョン情報」から現在のバージョンを確認できます。ファイルメニューの「更新を確認」からGitHub Releaseの最新版を確認できます。新しいバージョンがある場合は、ZIPをダウンロードしてアプリを再起動し、プレイリストなどの`data`を引き継いで更新します。更新処理の詳細ログは`%LOCALAPPDATA%\OreMusicPlayer\update.log`にJSONL形式で記録されます。開発版を`python -m ore_music_player`で起動している場合、更新確認は利用できません。
 
 設定はアプリフォルダー内の`data\settings.ini`に保存されます。プレイリストやライブラリ情報は`data\ore_music_player.sqlite3`に保存されます。初回起動時だけ旧バージョンのWindows設定を読み込み、以後はWindowsレジストリを使用しません。アプリフォルダーを削除すれば、新しい設定とデータもまとめて削除できます。旧バージョンが残したレジストリ設定は自動削除しないため、不要であれば手動で削除してください。
 
 次のReleaseを作るときは、`src/ore_music_player/version.py`と`pyproject.toml`のバージョンを同じ値へ変更してから、同じ値の`v`タグをpushしてください。
 
 ```powershell
-git tag v0.2.3
-git push origin v0.2.3
+git tag v0.2.4
+git push origin v0.2.4
 ```
 
 mpvランタイムはライセンスとサイズの都合でこのリポジトリには含めていません。GitHub Actionsでビルドする場合は、CIが参照できる方法で`vendor/mpv/`を用意してください。個人用リポジトリなら管理対象に追加する方法もありますが、mpvの配布条件を確認してから行ってください。
