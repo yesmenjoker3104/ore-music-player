@@ -4,6 +4,7 @@ import wave
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from conftest import FakePlaylistRepository
@@ -27,6 +28,7 @@ from ore_music_player.ui.main_window import (
     MainWindow,
     PlaybackMode,
 )
+from ore_music_player.version import __version__
 
 TEST_SETTINGS_PATH = Path(tempfile.gettempdir()) / "ore-music-player-test-settings.ini"
 
@@ -593,11 +595,10 @@ def test_registered_folder_roots_merge_nested_folder_under_parent(
     )
     window.file_system_model.set_root_paths(window._registered_folders)
 
-    assert window.file_system_model._root_paths == (
-        pc_folder,
-        music_folder,
-        nested_folder,
-    )
+    assert window.file_system_model._root_paths == (pc_folder, music_folder)
+    assert not window.file_system_model.parent(
+        window.file_system_model.index(str(music_folder))
+    ).isValid()
     window.close()
 
 
@@ -1760,10 +1761,7 @@ def test_registered_folder_roots_keep_nested_folder_and_parent(
         window._registered_folders
     )
 
-    assert window.file_system_model._root_paths == (
-        parent_folder,
-        nested_folder,
-    )
+    assert window.file_system_model._root_paths == (parent_folder,)
 
     assert parent_folder in window._registered_folders
     assert nested_folder in window._registered_folders
@@ -1822,3 +1820,24 @@ def test_open_parent_folder_keeps_child_folder_registration(
     }
 
     window.close()
+
+
+def test_version_info_is_available_in_help_menu(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    try:
+        help_menu_action = next(
+            action for action in window.menuBar().actions() if action.text() == "ヘルプ"
+        )
+        help_menu = help_menu_action.menu()
+        assert help_menu is not None
+        assert [action.text() for action in help_menu.actions()] == ["バージョン情報"]
+
+        with patch("ore_music_player.ui.main_window.QMessageBox.information") as information:
+            window.show_version_info()
+
+        information.assert_called_once()
+        assert f"v{__version__}" in information.call_args.args[2]
+    finally:
+        window.close()

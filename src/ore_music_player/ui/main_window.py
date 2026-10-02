@@ -95,6 +95,7 @@ from ore_music_player.ui.playlist_view import (
 )
 from ore_music_player.ui.separation_worker import EnvSetupWorker, SeparationWorker
 from ore_music_player.ui.utils import format_duration
+from ore_music_player.version import __version__
 
 TILE_BUTTON_SIZE = 112
 TILE_GRID_SPACING = 4
@@ -292,7 +293,14 @@ class RegisteredFoldersModel(QAbstractProxyModel):
 
 		self._root_paths = tuple(
 			sorted(
-				normalized_paths,
+				(
+					path
+					for path in normalized_paths
+					if not any(
+						path != other and other in path.parents
+						for other in normalized_paths
+					)
+				),
 				key=lambda path: str(path).casefold(),
 			)
 		)
@@ -1348,6 +1356,18 @@ class MainWindow(QMainWindow):
 		self.recent_menu = self.menuBar().addMenu("最近再生")
 		self._refresh_recent_menu()
 
+		help_menu = self.menuBar().addMenu("ヘルプ")
+		version_action = QAction("バージョン情報", self)
+		version_action.triggered.connect(self.show_version_info)
+		help_menu.addAction(version_action)
+
+	def show_version_info(self) -> None:
+		QMessageBox.information(
+			self,
+			"バージョン情報",
+			f"Ore Music Player\nバージョン: v{__version__}",
+		)
+
 	def check_for_updates(self) -> None:
 		if not getattr(sys, "frozen", False):
 			QMessageBox.information(
@@ -1367,7 +1387,11 @@ class MainWindow(QMainWindow):
 		self._update_worker.start()
 
 	def _show_no_update(self) -> None:
-		QMessageBox.information(self, "更新確認", "現在のバージョンは最新版です。")
+		QMessageBox.information(
+			self,
+			"更新確認",
+			f"現在のバージョン v{__version__} は最新版です。",
+		)
 
 	def _confirm_update(self, payload: object) -> None:
 		release, staged_application = payload
