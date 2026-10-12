@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <radialGradient id="bg" cx="0.5" cy="0.4" r="0.75">
+      <stop offset="0" stop-color="#3a1608"/>
+      <stop offset="1" stop-color="#140603"/>
+    </radialGradient>
+    <radialGradient id="core" cx="0.45" cy="0.5" r="0.7">
+      <stop offset="0" stop-color="#8a2a08"/>
+      <stop offset="0.6" stop-color="#4a1204"/>
+      <stop offset="1" stop-color="#2a0802"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffb020"/>
+      <stop offset="1" stop-color="#ff7a1a"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)" stroke="#ff7a1a" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M38 36 H90 Q96 36 96 42 V86 Q96 92 90 92 H38 Q32 92 32 86 V42 Q32 36 38 36 Z M56 36 V92" fill="none" stroke="#ff6a14" stroke-opacity="0.08" stroke-width="22" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M38 36 H90 Q96 36 96 42 V86 Q96 92 90 92 H38 Q32 92 32 86 V42 Q32 36 38 36 Z M56 36 V92" fill="none" stroke="#ff6a14" stroke-opacity="0.16" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M38 36 H90 Q96 36 96 42 V86 Q96 92 90 92 H38 Q32 92 32 86 V42 Q32 36 38 36 Z M56 36 V92" fill="none" stroke="#ff8a1f" stroke-opacity="0.28" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M38 36 H90 Q96 36 96 42 V86 Q96 92 90 92 H38 Q32 92 32 86 V42 Q32 36 38 36 Z M56 36 V92" fill="none" stroke="url(#rim)" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

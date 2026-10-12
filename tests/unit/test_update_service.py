@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import urllib.error
 import urllib.response
 from io import BytesIO
@@ -17,6 +20,7 @@ from ore_music_player.infrastructure.update_service import (
     prepare_update,
     start_update_process,
     update_log_path,
+    update_script_path,
 )
 
 
@@ -81,3 +85,105 @@ def test_start_update_process_passes_log_path(
     command = popen.call_args.args[0]
     assert "-LogPath" in command
     assert str(update_log_path()) in command
+
+
+def test_start_update_process_runs_outside_application_folder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr("ore_music_player.infrastructure.update_service.sys.platform", "win32")
+    current_application = tmp_path / "ore-music-player"
+
+    with patch("ore_music_player.infrastructure.update_service.subprocess.Popen") as popen:
+        start_update_process(
+            tmp_path / "staged" / "ore-music-player",
+            current_application,
+            tmp_path / "apply_update.ps1",
+        )
+
+    working_directory = Path(popen.call_args.kwargs["cwd"])
+    assert current_application not in (working_directory, *working_directory.parents)
+
+
+def _exited_process_id() -> int:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    return process.pid
+
+
+def _run_apply_script(
+    current_application: Path,
+    staged_application: Path,
+    log_path: Path,
+    working_directory: Path,
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["ORE_MUSIC_PLAYER_PARENT_PID"] = str(_exited_process_id())
+    return subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(update_script_path()),
+            "-LogPath",
+            str(log_path),
+            "-CurrentApplication",
+            str(current_application),
+            "-StagedApplication",
+            str(staged_application),
+            "-SkipLaunch",
+        ],
+        cwd=working_directory,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="The update script runs on Windows only")
+def test_apply_update_script_replaces_application(tmp_path: Path) -> None:
+    current_application = tmp_path / "ore-music-player"
+    (current_application / "data").mkdir(parents=True)
+    (current_application / "ore-music-player.exe").write_bytes(b"old")
+    (current_application / "data" / "settings.ini").write_text("kept", encoding="utf-8")
+    staged_application = tmp_path / "staged" / "ore-music-player"
+    staged_application.mkdir(parents=True)
+    (staged_application / "ore-music-player.exe").write_bytes(b"new")
+
+    result = _run_apply_script(
+        current_application,
+        staged_application,
+        tmp_path / "update.log",
+        working_directory=tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (current_application / "ore-music-player.exe").read_bytes() == b"new"
+    assert (current_application / "data" / "settings.ini").read_text(encoding="utf-8") == "kept"
+    assert not staged_application.exists()
+    assert not (tmp_path / "ore-music-player.previous").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="The update script runs on Windows only")
+def test_apply_update_script_restores_previous_application_on_failure(tmp_path: Path) -> None:
+    current_application = tmp_path / "ore-music-player"
+    current_application.mkdir()
+    (current_application / "ore-music-player.exe").write_bytes(b"old")
+    log_path = tmp_path / "update.log"
+
+    result = _run_apply_script(
+        current_application,
+        tmp_path / "missing" / "ore-music-player",
+        log_path,
+        working_directory=tmp_path,
+    )
+
+    assert result.returncode == 1
+    assert (current_application / "ore-music-player.exe").read_bytes() == b"old"
+    assert not (tmp_path / "ore-music-player.previous").exists()
+    assert "rollback_completed" in log_path.read_text(encoding="utf-8")

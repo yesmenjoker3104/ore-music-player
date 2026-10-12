@@ -8,7 +8,11 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from ore_music_player.bootstrap import build_application
-from ore_music_player.ui.main_window import MainWindow
+from ore_music_player.single_instance import (
+	OpenFilesServer,
+	send_paths_to_running_instance,
+)
+from ore_music_player.ui.main_window import SUPPORTED_AUDIO_SUFFIXES, MainWindow
 
 
 def _application_icon_path() -> Path:
@@ -25,9 +29,20 @@ def _set_windows_app_user_model_id() -> None:
 	)
 
 
+def _audio_paths_from_arguments(arguments: list[str]) -> list[str]:
+	return [
+		argument
+		for argument in arguments
+		if Path(argument).suffix.lower() in SUPPORTED_AUDIO_SUFFIXES
+	]
+
+
 def run() -> int:
 	_set_windows_app_user_model_id()
 	qt_application = QApplication(sys.argv)
+	open_paths = _audio_paths_from_arguments(sys.argv[1:])
+	if open_paths and send_paths_to_running_instance(open_paths):
+		return 0
 	qt_application.setWindowIcon(QIcon(str(_application_icon_path())))
 	with build_application() as components:
 		os.environ.setdefault(
@@ -42,6 +57,10 @@ def run() -> int:
 			stem_playback_backend=components.stem_playback_backend,
 		)
 		window.setWindowIcon(qt_application.windowIcon())
+		open_files_server = OpenFilesServer(parent=window)
+		open_files_server.paths_received.connect(window.open_external_paths)
 		qt_application.aboutToQuit.connect(window._save_left_pane_settings)
 		window.show()
+		window.open_external_paths(open_paths)
+		open_files_server.start()
 		return qt_application.exec()
