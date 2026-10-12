@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
+import tempfile
 import threading
 
 import numpy as np
-import pyrubberband as rb
+import soundfile as sf
 
 from ore_music_player.domain.models import Track
 from ore_music_player.infrastructure.audio.stem_mixer import (
@@ -19,10 +22,39 @@ from ore_music_player.infrastructure.separation.stem_repository import StemRepos
 logger = logging.getLogger(__name__)
 
 
+def _time_stretch(audio: np.ndarray, rate: float) -> np.ndarray:
+    """rubberband.exe でピッチを保ったまま時間伸縮する。
+
+    pyrubberband は窓なしフラグなしで子プロセスを起動するため、
+    GUI アプリから呼ぶとコンソールウィンドウが開いてしまう。
+    そのため直接起動して CREATE_NO_WINDOW を指定する。
+    """
+    fd, infile = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    fd, outfile = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        sf.write(infile, audio, SAMPLE_RATE)
+        subprocess.run(
+            ["rubberband", "-q", "--tempo", str(rate), infile, outfile],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        stretched, _ = sf.read(outfile, always_2d=True, dtype=audio.dtype)
+    finally:
+        os.unlink(infile)
+        os.unlink(outfile)
+    if audio.ndim == 1:
+        stretched = np.squeeze(stretched)
+    return stretched
+
+
 def _stretch_stems(stems: dict[str, np.ndarray], speed: float) -> dict[str, np.ndarray]:
     """ピッチを保ったまま時間伸縮する。speed > 1 で短くなる。"""
     return {
-        name: rb.time_stretch(audio, SAMPLE_RATE, speed).astype(np.float32)
+        name: _time_stretch(audio, speed).astype(np.float32)
         for name, audio in stems.items()
     }
 
