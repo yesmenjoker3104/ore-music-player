@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
 	QLabel,
 	QListWidget,
 	QMessageBox,
-	QPushButton,
 	QSplitter,
 	QTableWidget,
 	QTableWidgetItem,
@@ -26,6 +25,7 @@ from PySide6.QtWidgets import (
 from ore_music_player.application.playlist_service import PlaylistService
 from ore_music_player.domain.models import Playlist, Track
 from ore_music_player.infrastructure.audio.metadata import read_duration_seconds
+from ore_music_player.ui.icon_button import IconButton
 from ore_music_player.ui.utils import format_duration
 
 TILE_BUTTON_SIZE = 96
@@ -172,11 +172,23 @@ class PlaylistView(QWidget):
 		playlist_buttons = QGridLayout()
 		playlist_buttons.setHorizontalSpacing(TILE_GRID_SPACING)
 		playlist_buttons.setVerticalSpacing(TILE_GRID_SPACING)
-		create_button = self._create_tile_button("新規作成", self.create_playlist)
+		create_button = self._create_icon_button(
+			"新規作成",
+			"new_playlist",
+			self.create_playlist,
+		)
 		playlist_buttons.addWidget(create_button, 0, 0)
-		rename_button = self._create_tile_button("名前変更", self.rename_playlist)
+		rename_button = self._create_icon_button(
+			"名前変更",
+			"rename",
+			self.rename_playlist,
+		)
 		playlist_buttons.addWidget(rename_button, 0, 1)
-		delete_button = self._create_tile_button("削除", self.delete_selected)
+		delete_button = self._create_icon_button(
+			"削除",
+			"delete",
+			self.delete_selected,
+		)
 		playlist_buttons.addWidget(delete_button, 0, 2)
 		playlist_layout.addLayout(playlist_buttons)
 
@@ -217,9 +229,8 @@ class PlaylistView(QWidget):
 		self.refresh()
 
 	@staticmethod
-	def _create_tile_button(text: str, handler) -> QPushButton:
-		button = QPushButton(text)
-		button.setFixedSize(TILE_BUTTON_SIZE, TILE_BUTTON_SIZE)
+	def _create_icon_button(label: str, art: str, handler) -> IconButton:
+		button = IconButton(TILE_BUTTON_SIZE, label, art)
 		button.clicked.connect(handler)
 		return button
 

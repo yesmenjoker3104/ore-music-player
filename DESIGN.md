@@ -8,7 +8,7 @@
 - Windows上のmpv共有DLLを `vendor/mpv` に配置した環境で、アプリを起動して音声を再生できる。
 - 音源分離・ステム再生・パート別音量変更は実装済み。コード進行分析、イコライザ、スリープタイマーは今回の対象外とする。
 - 対象はデスクトップとタブレットでのタッチ操作。
-- 画面上の操作ボタンは正方形タイルとし、最大5列で配置する。
+- 画面上の操作ボタンは正方形タイルとし、上側の操作ボタンは1行に横並びさせる。ボタン間隔は右ペインの幅に合わせて広げ、常に右ペインいっぱいに広がるようにする。
 
 ## 実装状況
 
@@ -39,6 +39,7 @@ ore-music-player/
 ├── README.md
 ├── pyproject.toml
 ├── build.ps1
+├── register_file_association.ps1
 ├── ore_music_player.spec
 ├── .github/
 │   └── workflows/
@@ -156,7 +157,7 @@ ore-music-player/
 | `src/ore_music_player/infrastructure/__init__.py` | インフラ実装の公開 API をまとめる。 | ドメインルールや画面操作。 |
 | `src/ore_music_player/infrastructure/settings.py` | INI ファイル形式で `QSettings` を生成する。旧レジストリ設定（`OreMusicPlayer\OreMusicPlayer`）からの一回限りの移行を担当する。 | UI イベント、再生制御。 |
 | `src/ore_music_player/infrastructure/update_service.py` | GitHub Releases API で最新バージョンを確認し、ZIP アーカイブをダウンロード・展開・検証する。PowerShell スクリプト経由でアプリを差し替える。Releases が存在しない場合（404）は更新なしとして扱う。 | UI ダイアログの表示、再生制御。 |
-| `src/ore_music_player/infrastructure/apply_update.ps1` | 旧プロセスの終了を待ってから実行ファイルを差し替え、新バージョンを起動する PowerShell スクリプト。 | バージョン比較、ダウンロード。 |
+| `src/ore_music_player/infrastructure/apply_update.ps1` | 旧プロセスの終了を待ってから実行ファイルを差し替え、新バージョンを起動する PowerShell スクリプト。差し替えに失敗した場合は旧バージョンに戻して再起動する。アプリフォルダ内を作業ディレクトリにするとリネームできないため、起動元は一時フォルダにする。 | バージョン比較、ダウンロード。 |
 | `src/ore_music_player/infrastructure/playback_trace.py` | 再生操作イベントを JSONL 形式で `data/playback-trace.jsonl` へ記録する。デバッグ用途。 | 再生制御、UI 表示。 |
 | `src/ore_music_player/infrastructure/audio/__init__.py` | 音声バックエンド実装の公開 API をまとめる。 | 再生キューやプレイリストの管理。 |
 | `src/ore_music_player/infrastructure/audio/metadata.py` | mutagen 等を使って音声ファイルから再生時間を読み取る。 | 再生制御、プレイリスト保存。 |
@@ -199,7 +200,7 @@ UI層は表示とユーザー入力の変換だけを担当する。SQLiteや再
 | `tests/unit/test_stem_mixer.py` | StemMixer の形状、シーク、A/B ループ、パート音量ゼロを音声デバイスなしで検証する。 |
 | `tests/unit/test_stem_repository.py` | `:memory:` SQLite に対してステムパスの保存・取得・削除を検証する。 |
 | `tests/unit/test_separation_service.py` | Fake ステムリポジトリを使い、`SeparationService` の has_stems・separate・delete を検証する。 |
-| `tests/unit/test_update_service.py` | バージョン比較、アーカイブ検証、GitHub 404 時の無視を検証する。 |
+| `tests/unit/test_update_service.py` | バージョン比較、アーカイブ検証、GitHub 404 時の無視、更新スクリプトの差し替えと失敗時のロールバック、作業ディレクトリの指定を検証する。 |
 | `tests/integration/test_sqlite_repository.py` | 一時SQLiteデータベースに対する保存、読み込み、更新、再起動後の復元を検証する。 |
 | `tests/probes/test_demucs_env.py` | embeddable Python 環境の構築ロジックをローカルおよびネットワーク（`PROBE_NETWORK=1`）で検証する。 |
 | `tests/probes/test_demucs_separation.py` | 実際の Demucs 環境で htdemucs_6s の分離出力ステム名と WAV 出力を確認する。 |
@@ -228,7 +229,9 @@ python -m pip install -e ".[dev]"
 python -m ore_music_player
 ```
 
-`__main__.py` と `app.py` は実装済みで、`python -m ore_music_player` で起動する。現在はコンソールスクリプト名を登録せず、モジュール起動を標準コマンドとする。
+`__main__.py` と `app.py` は実装済みで、開発時は `python -m ore_music_player` で起動する。配布版の起動対象は PyInstaller の `ore-music-player.exe` とし、コンソールスクリプト名は登録しない。
+
+音声ファイルの関連付けは `register_file_association.ps1` で HKCU に登録する（管理者権限不要）。対象は `.mp3`、`.wav`、`.flac`、`.m4a`、`.ogg`。起動時に音声ファイルのパスを引数として受け取り、起動中のインスタンスが存在すれば `QLocalServer` 経由で転送して再生し、新規プロセスは終了コード 0 で終わる。起動順序は、起動時の引数を処理してからサーバーを開始する。転送が起動時の処理を上書きしないようにするためである。
 
 現在の最小検証コマンドは次のとおりである。
 
@@ -351,15 +354,31 @@ bootstrap -> ui + application + infrastructure
 - 現在の曲名と再生状態を表示する。
 - 再生位置とシーク操作を表示する。スライダー上にA地点・B地点をマーキングする。
 - 再生、一時停止、停止、前後移動を表示する。
-- A設定、B設定、A/Bループを表示する。
+- A設定、B設定、A/Bループ、再生モードを表示する。
+- 再生操作ボタンは1行に並べ、右ペインの幅いっぱいに広げる。ボタンの大きさは96pxで固定し、ボタン同士の間隔を幅に応じて伸縮させる。
+- 再生操作ボタンはアイコンのみで表示する。操作名は文字ラベルとしてツールチップ・アクセシブル名に設定する。
+- A設定・B設定は、設定済みの地点時間をアイコン下のキャプションに表示する。
+- ボタンの状態は3種類のSVGで切り替える。
+  - 通常: `<名前>.svg`
+  - ホバー（カーソルが乗っている間）: `<名前>_hover.svg`。外枠とグロウを強める。
+  - 押下中: `<名前>_pressed.svg`。グロウを弱め、グリフを3px下げる。
+- SVGは `src/ore_music_player/assets/` に置く。描画は `ui/icon_button.py` の `IconButton` が担当する。
+- 再生モードのアイコンは全曲ループ `repeat_all`、ランダム `shuffle`、1曲ループ `repeat_one`。
+- QtSvgはぼかしフィルタ・入れ子の `<svg>`・角丸クリップ（clipPath）に対応しない。グロウは低い `stroke-opacity` の重ね描き、角丸は arc 付きの path で表現する。
 - `0.50x`〜`1.50x` の速度スライダーを表示する。
 - 音量スライダーを表示する。
-
-### プレイリスト管理画面
+- 左ペインの「削除」（登録解除）と「ステム音量」は `IconButton` のアイコンとキャプションで表示する。アート名は `delete` と `stem_volume`。
+- `IconButton` のフォーカス枠は Tab などキーボード操作でフォーカスしたときだけ表示する。
+- 左ペインの表示・非表示はトラック行左端の `left_pane_on` / `left_pane_off` ボタンで切り替える（タッチ操作向けの1タップ）。表示状態と左ペイン幅は保存する。
+- 練習モードはトラック行右端の `practice_mode` / `practice_mode_on` ボタンで切り替える。
+  - 表示するのは上部の操作ボタン、再生位置、再生速度、音量のみ。メニューバー、曲名、左ペイン、プレイリストを隠す。
+  - ウィンドウは常時最前面（`WindowStaysOnTopHint`）になり、操作要素（ボタン・スライダー）を通常時の50%に縮小して、ウィンドウを最小サイズ（`minimumSizeHint()`）にする。終了時は要素の大きさと直前の通常時のジオメトリ、右ペインの分割を戻す。
+  - 練習モードの状態は保存しない。練習モード中は分割・ジオメトリの保存を行わず、通常時の保存済みレイアウトを保つ。
+  - 上部ボタン行へ追加すると右ペインの最小幅が増え、左ペインが縮むため、切り替えボタンはトラック行に置く。
 
 - 左側または上側に保存済みプレイリスト一覧
 - 選択したプレイリストの曲一覧
-- 新規作成、名前変更、削除
+- 「新規作成」「名前変更」「削除」は再生画面と同じアイコンボタン（`IconButton`）で表示し、ホバー・押下時の絵柄を切り替える。アート名は `new_playlist`・`rename`・`delete`。
 - 曲の追加、フォルダからの追加、曲の削除
 - 曲順の変更
 

@@ -41,7 +41,6 @@ from PySide6.QtWidgets import (
 	QDialog,
 	QFileDialog,
 	QFileSystemModel,
-	QGridLayout,
 	QGroupBox,
 	QHBoxLayout,
 	QLabel,
@@ -50,7 +49,6 @@ from PySide6.QtWidgets import (
 	QMenu,
 	QMessageBox,
 	QProgressDialog,
-	QPushButton,
 	QSizePolicy,
 	QSlider,
 	QSplitter,
@@ -89,6 +87,7 @@ from ore_music_player.infrastructure.update_service import (
 	update_log_path,
 	update_script_path,
 )
+from ore_music_player.ui.icon_button import IconButton
 from ore_music_player.ui.playlist_view import (
 	PlaylistTrackSelection,
 	PlaylistView,
@@ -97,7 +96,7 @@ from ore_music_player.ui.separation_worker import EnvSetupWorker, SeparationWork
 from ore_music_player.ui.utils import format_duration
 from ore_music_player.version import __version__
 
-TILE_BUTTON_SIZE = 112
+PRACTICE_MODE_SCALE = 0.5
 TILE_GRID_SPACING = 4
 SPEED_SLIDER_WIDTH = 160
 SUPPORTED_AUDIO_SUFFIXES = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
@@ -106,31 +105,37 @@ SEEK_SCALE = 1000
 SLIDER_GROOVE_HEIGHT = 18
 SLIDER_HANDLE_SIZE = 28
 SLIDER_MINIMUM_HEIGHT = 44
-SLIDER_STYLE = f"""
+
+
+def _slider_style(scale: float) -> str:
+	def px(value: float) -> int:
+		return round(value * scale)
+
+	return f"""
 QSlider {{
-	min-height: {SLIDER_MINIMUM_HEIGHT}px;
+	min-height: {px(SLIDER_MINIMUM_HEIGHT)}px;
 }}
 QSlider::groove:horizontal {{
-	height: {SLIDER_GROOVE_HEIGHT}px;
+	height: {px(SLIDER_GROOVE_HEIGHT)}px;
 	background: #d7dde5;
 	border: 1px solid #9aa4b2;
-	border-radius: 9px;
+	border-radius: {px(9)}px;
 }}
 QSlider::sub-page:horizontal {{
 	background: #2f6fed;
-	border-radius: 9px;
+	border-radius: {px(9)}px;
 }}
 QSlider::add-page:horizontal {{
 	background: #d7dde5;
-	border-radius: 9px;
+	border-radius: {px(9)}px;
 }}
 QSlider::handle:horizontal {{
-	width: {SLIDER_HANDLE_SIZE}px;
-	height: {SLIDER_HANDLE_SIZE}px;
-	margin: -5px 0;
+	width: {px(SLIDER_HANDLE_SIZE)}px;
+	height: {px(SLIDER_HANDLE_SIZE)}px;
+	margin: {px(-5)}px 0;
 	background: #ffffff;
 	border: 2px solid #2f6fed;
-	border-radius: 14px;
+	border-radius: {px(14)}px;
 }}
 QSlider::groove:horizontal:disabled {{
 	background: #e5e7eb;
@@ -572,6 +577,9 @@ class MainWindow(QMainWindow):
 	_RECENT_TRACKS_KEY = "playback/recentTracks"
 	_PLAYBACK_SESSION_KEY = "playback/session"
 	_PLAYBACK_SESSION_VERSION = 1
+	_LEFT_PANE_VISIBLE_KEY = "leftPane/visible"
+	_LEFT_PANE_WIDTH_KEY = "leftPane/width"
+	_DEFAULT_LEFT_PANE_WIDTH = 345
 
 	def __init__(
 		self,
@@ -616,6 +624,18 @@ class MainWindow(QMainWindow):
 		self._drive_roots = self._load_drive_roots()
 		self._recent_paths = self._load_recent_paths()
 		self._file_tree_filter = ""
+		self._left_pane_visible = self._settings.value(
+			self._LEFT_PANE_VISIBLE_KEY,
+			True,
+			type=bool,
+		)
+		self._left_pane_width = self._settings.value(
+			self._LEFT_PANE_WIDTH_KEY,
+			self._DEFAULT_LEFT_PANE_WIDTH,
+			type=int,
+		)
+		self._practice_mode = False
+		self._practice_saved_layout: dict | None = None
 		splitter_layout_version = self._settings.value(
 			self._SPLITTER_LAYOUT_VERSION_KEY,
 			0,
@@ -659,6 +679,7 @@ class MainWindow(QMainWindow):
 		layout.addWidget(splitter)
 
 		file_panel = QWidget()
+		self.file_panel = file_panel
 		file_panel.setMinimumWidth(0)
 		file_layout = QVBoxLayout(file_panel)
 		file_layout.setContentsMargins(0, 0, 0, 0)
@@ -739,10 +760,19 @@ class MainWindow(QMainWindow):
 		file_layout.addWidget(self.file_tree)
 		self._restore_registered_tracks()
 		splitter.addWidget(file_panel)
-		self.delete_file_button = QPushButton("削除")
+		self.delete_file_button = self._create_control_button(
+			"削除",
+			"delete",
+			self.delete_selected_files,
+			72,
+		)
+		self.delete_file_button.set_caption("削除")
 		self.delete_file_button.setEnabled(False)
-		self.delete_file_button.clicked.connect(self.delete_selected_files)
-		file_layout.addWidget(self.delete_file_button)
+		delete_file_row = QHBoxLayout()
+		delete_file_row.setContentsMargins(0, 0, 0, 0)
+		delete_file_row.addWidget(self.delete_file_button)
+		delete_file_row.addStretch(1)
+		file_layout.addLayout(delete_file_row)
 
 		right_splitter = QSplitter(Qt.Orientation.Vertical)
 		self.right_splitter = right_splitter
@@ -768,70 +798,101 @@ class MainWindow(QMainWindow):
 		track_status_layout = QHBoxLayout()
 		track_status_layout.setContentsMargins(0, 0, 0, 0)
 		track_status_layout.setSpacing(0)
+		self.left_pane_button = self._create_control_button(
+			"",
+			"left_pane_on",
+			self.toggle_left_pane,
+			48,
+		)
+		self._update_left_pane_button()
+		track_status_layout.addWidget(self.left_pane_button)
 		track_status_layout.addWidget(self.track_label, 1)
+		self.practice_mode_button = self._create_control_button(
+			"",
+			"practice_mode",
+			self.toggle_practice_mode,
+			48,
+		)
+		self._update_practice_mode_button()
+		track_status_layout.addWidget(self.practice_mode_button)
 		player_layout.addLayout(track_status_layout)
 
-		button_grid = QGridLayout()
-		button_grid.setHorizontalSpacing(TILE_GRID_SPACING)
-		button_grid.setVerticalSpacing(TILE_GRID_SPACING)
+		button_row = QHBoxLayout()
+		button_row.setContentsMargins(0, 0, 0, 0)
+		button_row.setSpacing(0)
 
 		control_button_size = 96
-		self.previous_button = self._create_tile_button(
+		self.previous_button = self._create_control_button(
 			"前の曲",
+			"prev",
 			self.previous_track,
 			control_button_size,
 		)
-		button_grid.addWidget(self.previous_button, 0, 0)
+		button_row.addWidget(self.previous_button)
 
-		self.play_pause_button = self._create_tile_button(
+		self.play_pause_button = self._create_control_button(
 			"再生",
+			"play",
 			self.toggle_play_pause,
 			control_button_size,
 		)
 
-		button_grid.addWidget(self.play_pause_button, 0, 1)
+		button_row.addStretch(1)
+		button_row.addWidget(self.play_pause_button)
 
-		self.stop_button = self._create_tile_button(
+		self.stop_button = self._create_control_button(
 			"停止",
+			"stop",
 			self.stop,
 			control_button_size,
 		)
-		button_grid.addWidget(self.stop_button, 0, 2)
+		button_row.addStretch(1)
+		button_row.addWidget(self.stop_button)
 
-		self.next_button = self._create_tile_button(
+		self.next_button = self._create_control_button(
 			"次の曲",
+			"next",
 			self.next_track,
 			control_button_size,
 		)
-		button_grid.addWidget(self.next_button, 0, 3)
+		button_row.addStretch(1)
+		button_row.addWidget(self.next_button)
 
-		self.set_a_button = self._create_tile_button(
+		self.set_a_button = self._create_control_button(
 			"A設定",
+			"ab_a",
 			self.set_a,
 			control_button_size,
 		)
-		button_grid.addWidget(self.set_a_button, 0, 4)
-		self.set_b_button = self._create_tile_button(
+		button_row.addStretch(1)
+		button_row.addWidget(self.set_a_button)
+		self.set_b_button = self._create_control_button(
 			"B設定",
+			"ab_b",
 			self.set_b,
 			control_button_size,
 		)
-		button_grid.addWidget(self.set_b_button, 0, 5)
-		self.loop_button = self._create_tile_button(
-			"A/Bループ\n開始",
+		button_row.addStretch(1)
+		button_row.addWidget(self.set_b_button)
+		self.loop_button = self._create_control_button(
+			"A/Bループ開始",
+			"ab_loop",
 			self.toggle_loop,
 			control_button_size,
 		)
 		self.loop_button.setEnabled(False)
-		button_grid.addWidget(self.loop_button, 0, 6)
-		self.playback_mode_button = self._create_tile_button(
-			self._playback_mode_text(self._playback_mode),
+		button_row.addStretch(1)
+		button_row.addWidget(self.loop_button)
+		self.playback_mode_button = self._create_control_button(
+			"",
+			"repeat_all",
 			self.toggle_playback_mode,
 			control_button_size,
 		)
-		button_grid.addWidget(self.playback_mode_button, 0, 7)
-		player_layout.addLayout(button_grid)
-		player_layout.setAlignment(button_grid, Qt.AlignmentFlag.AlignLeft)
+		self._update_playback_mode_button()
+		button_row.addStretch(1)
+		button_row.addWidget(self.playback_mode_button)
+		player_layout.addLayout(button_row)
 
 		self.position_label = QLabel("0:00")
 		self.duration_label = QLabel("--:--")
@@ -899,9 +960,14 @@ class MainWindow(QMainWindow):
 		volume_inner.addWidget(self.volume_slider)
 		volume_inner.addWidget(self.volume_value_label)
 
-		self._stem_volume_button = QPushButton("ステム音量")
+		self._stem_volume_button = self._create_control_button(
+			"ステム音量",
+			"stem_volume",
+			self._open_stem_volume_dialog,
+			72,
+		)
+		self._stem_volume_button.set_caption("ステム音量")
 		self._stem_volume_button.setVisible(False)
-		self._stem_volume_button.clicked.connect(self._open_stem_volume_dialog)
 
 		controls_row = QHBoxLayout()
 		controls_row.setContentsMargins(0, 0, 0, 0)
@@ -942,6 +1008,7 @@ class MainWindow(QMainWindow):
 		self._restore_window_geometry()
 		self._create_shortcuts()
 		self._restore_splitter_state()
+		self._refresh_pane_visibility()
 		self._restore_playback_session()
 
 	def showEvent(self, event) -> None:
@@ -950,6 +1017,7 @@ class MainWindow(QMainWindow):
 			self._layout_restored_after_show = True
 			self._restore_splitter_state()
 			self._restore_right_splitter_state()
+			self._refresh_pane_visibility()
 		if self._splitter_migration_pending:
 			self._splitter_migration_pending = False
 			QTimer.singleShot(100, self._move_splitter_right)
@@ -1012,24 +1080,122 @@ class MainWindow(QMainWindow):
 			self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 2)
 		return restored
 
+	def toggle_left_pane(self) -> None:
+		if self._left_pane_visible:
+			self._left_pane_width = self._current_left_pane_width()
+		self._left_pane_visible = not self._left_pane_visible
+		self._refresh_pane_visibility()
+		self._update_left_pane_button()
+		self._schedule_left_pane_settings_save()
+
+	def _current_left_pane_width(self) -> int:
+		if not self.file_panel.isHidden():
+			sizes = self.main_splitter.sizes()
+			if sizes and sizes[0] > 0:
+				return sizes[0]
+		return self._left_pane_width
+
+	def _refresh_pane_visibility(self) -> None:
+		show_left = self._left_pane_visible and not self._practice_mode
+		is_shown = not self.file_panel.isHidden()
+		if show_left == is_shown:
+			return
+		if show_left:
+			self.file_panel.show()
+			total = sum(self.main_splitter.sizes()) or self.width()
+			width = min(self._left_pane_width, max(0, total - 1))
+			self.main_splitter.setSizes([width, max(1, total - width)])
+		else:
+			self.file_panel.hide()
+
+	def _update_left_pane_button(self) -> None:
+		if self._left_pane_visible:
+			self.left_pane_button.set_art("left_pane_on")
+			self.left_pane_button.set_label("左ペインを隠す")
+		else:
+			self.left_pane_button.set_art("left_pane_off")
+			self.left_pane_button.set_label("左ペインを表示")
+
+	def toggle_practice_mode(self) -> None:
+		self.set_practice_mode(not self._practice_mode)
+
+	def set_practice_mode(self, enabled: bool) -> None:
+		if enabled == self._practice_mode:
+			return
+		if enabled:
+			self._left_pane_width = self._current_left_pane_width()
+			self._practice_saved_layout = {
+				"geometry": self.normalGeometry(),
+				"maximized": self.isMaximized(),
+				"right_sizes": self.right_splitter.sizes(),
+			}
+		self._practice_mode = enabled
+		self.menuBar().setVisible(not enabled)
+		self.track_label.setVisible(not enabled)
+		self.left_pane_button.setVisible(not enabled)
+		self.playlist_view.setVisible(not enabled)
+		self._refresh_pane_visibility()
+		self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+		self._update_practice_mode_button()
+		self._apply_practice_scale(enabled)
+		if enabled:
+			self.showNormal()
+			self.layout().activate()
+			self.resize(self.minimumSizeHint())
+			return
+		saved = self._practice_saved_layout
+		self._practice_saved_layout = None
+		if saved is None:
+			self.showNormal()
+			return
+		self.right_splitter.setSizes(saved["right_sizes"])
+		if saved["maximized"]:
+			self.showMaximized()
+		else:
+			self.setGeometry(saved["geometry"])
+			self.showNormal()
+
+	def _apply_practice_scale(self, enabled: bool) -> None:
+		scale = PRACTICE_MODE_SCALE if enabled else 1.0
+		for button in self.findChildren(IconButton):
+			button.set_scale(scale)
+		self._configure_slider(self.position_slider, scale)
+		self._configure_slider(self.speed_slider, scale)
+		self._configure_slider(self.volume_slider, scale)
+		self.speed_slider.setFixedWidth(round(SPEED_SLIDER_WIDTH * scale))
+		self.volume_slider.setFixedWidth(round(SPEED_SLIDER_WIDTH * scale))
+	def _update_practice_mode_button(self) -> None:
+		if self._practice_mode:
+			self.practice_mode_button.set_art("practice_mode_on")
+			self.practice_mode_button.set_label("練習モードを終了")
+		else:
+			self.practice_mode_button.set_art("practice_mode")
+			self.practice_mode_button.set_label("練習モード")
+
 	def _schedule_left_pane_settings_save(self, *_args) -> None:
 		self._settings_save_timer.start(150)
 
 	def _save_left_pane_settings(self, *_args) -> None:
 		self._settings_save_timer.stop()
+		self._settings.setValue(self._LEFT_PANE_VISIBLE_KEY, self._left_pane_visible)
 		self._settings.setValue(
-			self._SPLITTER_STATE_KEY,
-			self.main_splitter.saveState(),
+			self._LEFT_PANE_WIDTH_KEY,
+			self._current_left_pane_width(),
 		)
-		self._settings.setValue(
-			self._RIGHT_SPLITTER_STATE_KEY,
-			self.right_splitter.saveState(),
-		)
-		self._settings.setValue(
-			self._WINDOW_GEOMETRY_KEY,
-			self.saveGeometry(),
-		)
-		self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 17)
+		if not self._practice_mode:
+			self._settings.setValue(
+				self._SPLITTER_STATE_KEY,
+				self.main_splitter.saveState(),
+			)
+			self._settings.setValue(
+				self._RIGHT_SPLITTER_STATE_KEY,
+				self.right_splitter.saveState(),
+			)
+			self._settings.setValue(
+				self._WINDOW_GEOMETRY_KEY,
+				self.saveGeometry(),
+			)
+			self._settings.setValue(self._SPLITTER_LAYOUT_VERSION_KEY, 17)
 		self._settings.setValue(
 			self._FILE_TREE_HEADER_STATE_KEY,
 			self.file_tree.header().saveState(),
@@ -1210,9 +1376,7 @@ class MainWindow(QMainWindow):
 				self._playback_mode = PlaybackMode(mode)
 			except ValueError:
 				pass
-		self.playback_mode_button.setText(
-			self._playback_mode_text(self._playback_mode)
-		)
+		self._update_playback_mode_button()
 
 		speed = self._session_nonnegative_float(session.get("speed"))
 		if speed is not None:
@@ -1329,13 +1493,13 @@ class MainWindow(QMainWindow):
 		super().closeEvent(event)
 
 	@staticmethod
-	def _create_tile_button(
-		text: str,
+	def _create_control_button(
+		label: str,
+		art: str,
 		handler,
-		size: int = TILE_BUTTON_SIZE,
-	) -> QPushButton:
-		button = QPushButton(text)
-		button.setFixedSize(size, size)
+		size: int,
+	) -> IconButton:
+		button = IconButton(size, label, art)
 		button.clicked.connect(handler)
 		return button
 
@@ -1511,10 +1675,10 @@ class MainWindow(QMainWindow):
 			self._shortcuts.append(shortcut)
 
 	@staticmethod
-	def _configure_slider(slider: QSlider) -> None:
+	def _configure_slider(slider: QSlider, scale: float = 1.0) -> None:
 		slider.setOrientation(Qt.Orientation.Horizontal)
-		slider.setMinimumHeight(SLIDER_MINIMUM_HEIGHT)
-		slider.setStyleSheet(SLIDER_STYLE)
+		slider.setMinimumHeight(round(SLIDER_MINIMUM_HEIGHT * scale))
+		slider.setStyleSheet(_slider_style(scale))
 
 	def open_files(self) -> None:
 		file_paths, _ = QFileDialog.getOpenFileNames(
@@ -1530,6 +1694,20 @@ class MainWindow(QMainWindow):
 			self._set_file_tree_root(Path(file_paths[0]).parent)
 			self._append_tracks(self._tracks_from_paths(file_paths, read_durations=False))
 			self._update_file_tree_visibility()
+
+	def open_external_paths(self, paths: list[str]) -> None:
+		audio_paths = [
+			Path(path)
+			for path in paths
+			if Path(path).suffix.lower() in SUPPORTED_AUDIO_SUFFIXES
+			and Path(path).is_file()
+		]
+		if not audio_paths:
+			return
+		self._append_tracks(self._tracks_from_paths(audio_paths, read_durations=False))
+		self._select_file_path(audio_paths[0], autoplay=True)
+		self.raise_()
+		self.activateWindow()
 
 	def open_folder(self) -> None:
 		folder_path = QFileDialog.getExistingDirectory(self, "音声フォルダを選択")
@@ -2243,14 +2421,24 @@ class MainWindow(QMainWindow):
 		modes = tuple(PlaybackMode)
 		mode_index = modes.index(self._playback_mode)
 		self._playback_mode = modes[(mode_index + 1) % len(modes)]
-		self.playback_mode_button.setText(
+		self._update_playback_mode_button()
+
+	def _update_playback_mode_button(self) -> None:
+		arts = {
+			PlaybackMode.REPEAT_ALL: "repeat_all",
+			PlaybackMode.SHUFFLE: "shuffle",
+			PlaybackMode.REPEAT_ONE: "repeat_one",
+		}
+		self.playback_mode_button.set_label(
 			self._playback_mode_text(self._playback_mode)
 		)
+		self.playback_mode_button.set_art(arts[self._playback_mode])
 
 	def _set_playback_status(self, label: str, is_playing: bool) -> None:
 		self._is_playing = is_playing
 		self.status_label.setText(label)
-		self.play_pause_button.setText("一時停止" if is_playing else "再生")
+		self.play_pause_button.set_label("一時停止" if is_playing else "再生")
+		self.play_pause_button.set_art("pause" if is_playing else "play")
 
 	def toggle_play_pause(self) -> None:
 		if self._selected_playlist_track is not None:
@@ -2401,10 +2589,18 @@ class MainWindow(QMainWindow):
 		return self.playback_service.position_seconds
 
 	@staticmethod
-	def _ab_button_text(label: str, position: float | None) -> str:
+	def _set_ab_button(
+		button: IconButton,
+		label: str,
+		position: float | None,
+	) -> None:
 		if position is None:
-			return label
-		return f"{label}\n{MainWindow._format_time(position)}"
+			button.set_label(label)
+			button.set_caption("")
+			return
+		time_text = MainWindow._format_time(position)
+		button.set_label(f"{label} {time_text}")
+		button.set_caption(time_text)
 
 	def _update_position_markers(self) -> None:
 		state = self.playback_service.state
@@ -2416,12 +2612,8 @@ class MainWindow(QMainWindow):
 
 	def _update_ab_button_labels(self) -> None:
 		state = self.playback_service.state
-		self.set_a_button.setText(
-			self._ab_button_text("A設定", state.a_point_seconds)
-		)
-		self.set_b_button.setText(
-			self._ab_button_text("B設定", state.b_point_seconds)
-		)
+		self._set_ab_button(self.set_a_button, "A設定", state.a_point_seconds)
+		self._set_ab_button(self.set_b_button, "B設定", state.b_point_seconds)
 		self._update_position_markers()
 
 	def _update_loop_button(self) -> None:
@@ -2432,9 +2624,9 @@ class MainWindow(QMainWindow):
 		)
 		self.loop_button.setEnabled(has_loop_points)
 		if state.loop_enabled:
-			self.loop_button.setText("A/B解除")
+			self.loop_button.set_label("A/B解除")
 		else:
-			self.loop_button.setText("A/Bループ\n開始")
+			self.loop_button.set_label("A/Bループ開始")
 
 	def set_a(self) -> None:
 		if self._current_track is not None:

@@ -26,6 +26,7 @@
 - 全曲ループ、ランダム再生、1曲ループの切り替え
 - 音量設定、最近再生、最後の再生セッション（キュー、曲、位置、速度、A/Bループ、再生モード、ステム個別音量）の保存・復元
 - ファイルツリーの検索・フィルタ
+- 左ペインの表示・非表示ボタン、常時最前面の練習モード（上部操作・再生位置・速度・音量のみ表示）
 - スペースキー、左右矢印、Ctrl+左右矢印によるキーボード操作
 - PySide6の画面とlibmpvによる実際の音声再生
 
@@ -70,6 +71,26 @@ PyInstallerの`onedir`形式で、mpvランタイムを含むZIPを作成でき�
 
 成功すると`dist\ore-music-player-windows-x64.zip`が作成されます。ZIPを展開した後は、フォルダー内の`ore-music-player.exe`を起動してください。`onedir`形式では、EXE単体ではなくフォルダー全体を配布します。
 
+### 音声ファイルの関連付け
+
+エクスプローラーで音声ファイルをダブルクリックして本アプリで開くには、ビルド後に次のスクリプトを実行します。管理者権限は不要で、現在のユーザーのレジストリ（`HKCU`）だけを変更します。対象拡張子は`.mp3`、`.wav`、`.flac`、`.m4a`、`.ogg`です。
+
+```powershell
+.\register_file_association.ps1
+```
+
+既定では`dist\ore-music-player\ore-music-player.exe`を登録します。別のExeを使う場合は`-ExePath`で指定してください。
+
+Windows 10 / 11 では、登録だけでは既定のアプリにならない場合があります。「設定」→「アプリ」→「既定のアプリ」で「Ore Music Player」を選択してください。
+
+登録を解除するには次のコマンドを実行します。
+
+```powershell
+.\register_file_association.ps1 -Unregister
+```
+
+アプリが起動中の場合、開かれたファイルは起動中のウィンドウに追加され、すぐに再生されます。
+
 GitHub Actionsは`v`で始まるタグをpushすると起動し、テスト、Exe化、GitHub ReleaseへのZIP添付まで行います。
 
 ```powershell
@@ -84,8 +105,8 @@ Exe版では、ヘルプメニューの「バージョン情報」から現在�
 次のReleaseを作るときは、`src/ore_music_player/version.py`と`pyproject.toml`のバージョンを同じ値へ変更してから、同じ値の`v`タグをpushしてください。
 
 ```powershell
-git tag v0.2.4
-git push origin v0.2.4
+git tag v0.2.5
+git push origin v0.2.5
 ```
 
 mpvランタイムはライセンスとサイズの都合でこのリポジトリには含めていません。GitHub Actionsでビルドする場合は、CIが参照できる方法で`vendor/mpv/`を用意してください。個人用リポジトリなら管理対象に追加する方法もありますが、mpvの配布条件を確認してから行ってください。

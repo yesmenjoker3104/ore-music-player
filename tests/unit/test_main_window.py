@@ -23,6 +23,7 @@ from ore_music_player.application.playback_service import PlaybackService
 from ore_music_player.application.playlist_service import PlaylistService
 from ore_music_player.application.ports import PlaybackBackendError
 from ore_music_player.domain.models import Track
+from ore_music_player.ui.icon_button import IconButton
 from ore_music_player.ui.main_window import (
     SLIDER_GROOVE_HEIGHT,
     MainWindow,
@@ -182,9 +183,7 @@ def test_playback_session_is_saved_and_restored(
     first_window.playback_service.set_b(40.0)
     first_window.playback_service.enable_loop()
     first_window._playback_mode = PlaybackMode.REPEAT_ONE
-    first_window.playback_mode_button.setText(
-        first_window._playback_mode_text(first_window._playback_mode)
-    )
+    first_window._update_playback_mode_button()
     first_backend.position_seconds = 25.0
     first_window.close()
 
@@ -742,10 +741,12 @@ def test_left_pane_settings_are_saved_and_restored(
         qt_application.processEvents()
         window._set_file_tree_root(tmp_path)
         window.resize(700, 520)
+        qt_application.processEvents()
         window.main_splitter.setSizes([180, 500])
         window.right_splitter.setSizes([150, 300])
         window.file_tree.setColumnWidth(0, 320)
         window.file_tree.setColumnWidth(1, 95)
+        qt_application.processEvents()
         window._save_left_pane_settings()
         saved_left_width = window.main_splitter.sizes()[0]
         saved_right_sizes = window.right_splitter.sizes()
@@ -759,6 +760,8 @@ def test_left_pane_settings_are_saved_and_restored(
 
     restored_window, _ = make_window(qt_application)
     try:
+        restored_window.resize(saved_window_size)
+        restored_window.show()
         qt_application.processEvents()
         assert Path(restored_window.file_system_model.rootPath()) == tmp_path
         assert not restored_window.file_tree.rootIndex().isValid()
@@ -775,6 +778,155 @@ def test_left_pane_settings_are_saved_and_restored(
         restored_window.close()
         settings.clear()
         settings.sync()
+
+
+def test_left_pane_toggle_hides_and_shows_file_panel(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    try:
+        window._settings.clear()
+        window.show()
+        qt_application.processEvents()
+        assert not window.file_panel.isHidden()
+
+        window.left_pane_button.click()
+        qt_application.processEvents()
+        assert window.file_panel.isHidden()
+        assert window.left_pane_button.art() == "left_pane_off"
+        assert window._settings.value(window._LEFT_PANE_VISIBLE_KEY, type=bool) is False
+
+        window.left_pane_button.click()
+        qt_application.processEvents()
+        assert not window.file_panel.isHidden()
+        assert window.left_pane_button.art() == "left_pane_on"
+        assert window.main_splitter.sizes()[0] > 0
+    finally:
+        window._settings.clear()
+        window.close()
+
+
+def test_left_pane_hidden_state_and_width_are_restored(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    try:
+        window._settings.clear()
+        window.resize(1209, 770)
+        window.show()
+        qt_application.processEvents()
+        window.main_splitter.setSizes([300, 500])
+        qt_application.processEvents()
+        expected_width = window._current_left_pane_width()
+        window.toggle_left_pane()
+        qt_application.processEvents()
+        window._save_left_pane_settings()
+    finally:
+        window.close()
+
+    restored, _ = make_window(qt_application)
+    try:
+        restored.resize(1209, 770)
+        restored.show()
+        qt_application.processEvents()
+        assert restored.file_panel.isHidden()
+        assert restored.left_pane_button.art() == "left_pane_off"
+        assert restored._left_pane_width == expected_width
+
+        restored.toggle_left_pane()
+        qt_application.processEvents()
+        assert not restored.file_panel.isHidden()
+        assert abs(restored.main_splitter.sizes()[0] - expected_width) <= 2
+    finally:
+        settings = restored._settings
+        restored.close()
+        settings.clear()
+        settings.sync()
+
+
+def test_practice_mode_shows_only_playback_controls_on_top(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    try:
+        window._settings.clear()
+        window.show()
+        qt_application.processEvents()
+        normal_width = window.width()
+        normal_right_sizes = window.right_splitter.sizes()
+        normal_button_width = window.previous_button.width()
+        normal_slider_width = window.speed_slider.width()
+
+        window.practice_mode_button.click()
+        qt_application.processEvents()
+        assert window._practice_mode
+        assert bool(window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        assert window.file_panel.isHidden()
+        assert window.playlist_view.isHidden()
+        assert window.track_label.isHidden()
+        assert window.left_pane_button.isHidden()
+        assert window.menuBar().isHidden()
+        assert not window.practice_mode_button.isHidden()
+        assert not window.position_slider.isHidden()
+        assert not window.speed_slider.isHidden()
+        assert not window.volume_slider.isHidden()
+        assert window.practice_mode_button.art() == "practice_mode_on"
+        assert window.width() < normal_width
+        assert window.previous_button.width() == normal_button_width // 2
+        assert window.speed_slider.width() == normal_slider_width // 2
+        assert window.volume_slider.width() == normal_slider_width // 2
+        assert window.size() == window.minimumSizeHint()
+
+        window.practice_mode_button.click()
+        qt_application.processEvents()
+        assert not window._practice_mode
+        assert not bool(window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        assert not window.file_panel.isHidden()
+        assert not window.playlist_view.isHidden()
+        assert not window.track_label.isHidden()
+        assert not window.menuBar().isHidden()
+        assert window.practice_mode_button.art() == "practice_mode"
+        assert window.width() == normal_width
+        assert window.previous_button.width() == normal_button_width
+        assert window.speed_slider.width() == normal_slider_width
+        assert window.right_splitter.sizes() == pytest.approx(
+            normal_right_sizes,
+            abs=2,
+        )
+    finally:
+        window._settings.clear()
+        window.close()
+
+
+def test_practice_mode_does_not_overwrite_saved_layout(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    try:
+        window._settings.clear()
+        window.show()
+        qt_application.processEvents()
+        window.main_splitter.setSizes([300, 500])
+        window._save_left_pane_settings()
+        saved_splitter = window._settings.value(window._SPLITTER_STATE_KEY)
+        saved_right_splitter = window._settings.value(window._RIGHT_SPLITTER_STATE_KEY)
+        saved_geometry = window._settings.value(window._WINDOW_GEOMETRY_KEY)
+
+        window.set_practice_mode(True)
+        qt_application.processEvents()
+        window._save_left_pane_settings()
+
+        assert window._settings.value(window._SPLITTER_STATE_KEY) == saved_splitter
+        assert (
+            window._settings.value(window._RIGHT_SPLITTER_STATE_KEY)
+            == saved_right_splitter
+        )
+        assert window._settings.value(window._WINDOW_GEOMETRY_KEY) == saved_geometry
+        assert window._settings.value(window._LEFT_PANE_VISIBLE_KEY, type=bool) is True
+        window.set_practice_mode(False)
+    finally:
+        window._settings.clear()
+        window.close()
 
 
 def test_saved_left_pane_layout_is_migrated_by_75_pixels(
@@ -1160,29 +1312,29 @@ def test_play_pause_uses_one_toggle_button(
 
     playback_buttons = [
         button
-        for button in window.findChildren(QPushButton)
-        if button.text() in {"再生", "一時停止"}
+        for button in window.findChildren(IconButton)
+        if button.label() in {"再生", "一時停止"}
     ]
     assert playback_buttons == [window.play_pause_button]
     assert backend.play_calls == 1
     assert window.status_label.text() == "再生中"
-    assert window.play_pause_button.text() == "一時停止"
+    assert window.play_pause_button.label() == "一時停止"
 
     window.play_pause_button.click()
     assert backend.pause_calls == 1
     assert window.status_label.text() == "一時停止"
-    assert window.play_pause_button.text() == "再生"
+    assert window.play_pause_button.label() == "再生"
 
     window.play()
     window.stop()
     assert backend.stop_calls == 1
     assert window.status_label.text() == "停止中"
-    assert window.play_pause_button.text() == "再生"
+    assert window.play_pause_button.label() == "再生"
 
     window.play_pause_button.click()
     assert backend.play_calls == 3
     assert window.status_label.text() == "再生中"
-    assert window.play_pause_button.text() == "一時停止"
+    assert window.play_pause_button.label() == "一時停止"
 
     window.close()
 
@@ -1361,21 +1513,104 @@ def test_transport_and_ab_buttons_share_one_row(
     window.close()
 
 
+def test_transport_buttons_spread_across_pane_width(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    window.show()
+    qt_application.processEvents()
+
+    control_buttons = (
+        window.previous_button,
+        window.play_pause_button,
+        window.stop_button,
+        window.next_button,
+        window.set_a_button,
+        window.set_b_button,
+        window.loop_button,
+        window.playback_mode_button,
+    )
+    player = window.playback_mode_button.parentWidget()
+    gaps_by_width = {}
+    for width in (1400, 1800):
+        window.resize(width, window.height())
+        qt_application.processEvents()
+        content = player.layout().contentsRect()
+        assert control_buttons[0].geometry().left() == content.left()
+        assert control_buttons[-1].geometry().right() == content.right()
+        gaps = {
+            right_button.geometry().left() - left_button.geometry().right() - 1
+            for left_button, right_button in zip(
+                control_buttons,
+                control_buttons[1:],
+                strict=False,
+            )
+        }
+        assert max(gaps) - min(gaps) <= 1
+        gaps_by_width[width] = min(gaps)
+    assert gaps_by_width[1800] > gaps_by_width[1400]
+    window.close()
+
+
+def test_open_external_paths_queues_audio_files_and_plays_first(
+    qt_application: QApplication,
+    tmp_path: Path,
+) -> None:
+    window, _ = make_window(qt_application)
+    first_path = tmp_path / "first.mp3"
+    second_path = tmp_path / "second.wav"
+    ignored_path = tmp_path / "notes.txt"
+    for path in (first_path, second_path, ignored_path):
+        path.write_bytes(b"")
+
+    window.open_external_paths(
+        [
+            str(first_path),
+            str(ignored_path),
+            str(tmp_path / "missing.mp3"),
+            str(second_path),
+        ]
+    )
+
+    assert {Path(track.path).resolve() for track in window._queue} == {
+        first_path.resolve(),
+        second_path.resolve(),
+    }
+    assert window._current_track is not None
+    assert Path(window._current_track.path).resolve() == first_path.resolve()
+    window.close()
+
+
+def test_open_external_paths_ignores_unsupported_and_missing_files(
+    qt_application: QApplication,
+    tmp_path: Path,
+) -> None:
+    window, _ = make_window(qt_application)
+
+    window.open_external_paths(
+        [str(tmp_path / "notes.txt"), str(tmp_path / "missing.mp3")]
+    )
+
+    assert window._queue == ()
+    assert window._current_track is None
+    window.close()
+
+
 def test_playback_mode_button_cycles_through_three_modes(
     qt_application: QApplication,
 ) -> None:
     window, _ = make_window(qt_application)
 
     assert window._playback_mode is PlaybackMode.REPEAT_ALL
-    assert "全曲ループ" in window.playback_mode_button.text()
+    assert "全曲ループ" in window.playback_mode_button.label()
 
     window.playback_mode_button.click()
     assert window._playback_mode is PlaybackMode.SHUFFLE
-    assert "ランダム" in window.playback_mode_button.text()
+    assert "ランダム" in window.playback_mode_button.label()
 
     window.playback_mode_button.click()
     assert window._playback_mode is PlaybackMode.REPEAT_ONE
-    assert "1曲ループ" in window.playback_mode_button.text()
+    assert "1曲ループ" in window.playback_mode_button.label()
 
     window.playback_mode_button.click()
     assert window._playback_mode is PlaybackMode.REPEAT_ALL
@@ -1487,34 +1722,38 @@ def test_ab_buttons_show_positions_and_toggle_loop_button(
     window.load_tracks((Track("track-001", "song.mp3", "Song"),))
     window._set_duration(120.0)
 
-    assert window.set_a_button.text() == "A設定"
-    assert window.set_b_button.text() == "B設定"
-    assert window.loop_button.text() == "A/Bループ\n開始"
+    assert window.set_a_button.label() == "A設定"
+    assert window.set_b_button.label() == "B設定"
+    assert window.loop_button.label() == "A/Bループ開始"
     assert not window.loop_button.isEnabled()
 
     backend.position_seconds = 12.4
     window.set_a()
-    assert window.set_a_button.text() == "A設定\n0:12"
+    assert window.set_a_button.label() == "A設定 0:12"
+    assert window.set_a_button.caption() == "0:12"
     assert window.position_slider._a_marker_seconds == 12.4
     assert window.position_slider._b_marker_seconds is None
     assert not window.loop_button.isEnabled()
 
     backend.position_seconds = 65.9
     window.set_b()
-    assert window.set_b_button.text() == "B設定\n1:05"
+    assert window.set_b_button.label() == "B設定 1:05"
+    assert window.set_b_button.caption() == "1:05"
     assert window.position_slider._b_marker_seconds == 65.9
     assert window.loop_button.isEnabled()
 
     window.loop_button.click()
     assert window.playback_service.state.loop_enabled
-    assert window.loop_button.text() == "A/B解除"
+    assert window.loop_button.label() == "A/B解除"
     assert backend.loop_calls[-1] == (12.4, 65.9)
 
     window.loop_button.click()
     assert not window.playback_service.state.loop_enabled
-    assert window.loop_button.text() == "A/Bループ\n開始"
-    assert window.set_a_button.text() == "A設定"
-    assert window.set_b_button.text() == "B設定"
+    assert window.loop_button.label() == "A/Bループ開始"
+    assert window.set_a_button.label() == "A設定"
+    assert window.set_a_button.caption() == ""
+    assert window.set_b_button.label() == "B設定"
+    assert window.set_b_button.caption() == ""
     assert not window.loop_button.isEnabled()
     assert window.position_slider._a_marker_seconds is None
     assert window.position_slider._b_marker_seconds is None
@@ -1839,5 +2078,22 @@ def test_version_info_is_available_in_help_menu(
 
         information.assert_called_once()
         assert f"v{__version__}" in information.call_args.args[2]
+    finally:
+        window.close()
+
+
+def test_tree_delete_and_stem_volume_use_icon_buttons(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    try:
+        assert isinstance(window.delete_file_button, IconButton)
+        assert window.delete_file_button.art() == "delete"
+        assert window.delete_file_button.caption() == "削除"
+        assert window.delete_file_button.isEnabled() is False
+
+        assert isinstance(window._stem_volume_button, IconButton)
+        assert window._stem_volume_button.art() == "stem_volume"
+        assert window._stem_volume_button.caption() == "ステム音量"
     finally:
         window.close()

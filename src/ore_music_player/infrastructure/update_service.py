@@ -201,6 +201,7 @@ def start_update_process(
             str(staged_application),
         ],
         env=environment,
+        cwd=tempfile.gettempdir(),
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         close_fds=True,
     )

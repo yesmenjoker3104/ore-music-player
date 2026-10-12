@@ -3,7 +3,8 @@ param(
     [string]$CurrentApplication,
     [Parameter(Mandatory = $true)]
     [string]$StagedApplication,
-    [string]$LogPath = ""
+    [string]$LogPath = "",
+    [switch]$SkipLaunch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,7 +34,40 @@ function Write-UpdateLog {
 $current = [System.IO.Path]::GetFullPath($CurrentApplication)
 $staged = [System.IO.Path]::GetFullPath($StagedApplication)
 $backup = "$current.previous"
+$backupName = [System.IO.Path]::GetFileName($backup)
+$currentName = [System.IO.Path]::GetFileName($current)
+$oldData = Join-Path $backup 'data'
+$newData = Join-Path $current 'data'
+$renamed = $false
+$dataMoved = $false
 Write-UpdateLog "update_started current='$current' staged='$staged'"
+
+function Start-Application {
+    param([string]$ApplicationDirectory)
+
+    Start-Process -FilePath (Join-Path $ApplicationDirectory 'ore-music-player.exe') -WorkingDirectory $ApplicationDirectory
+}
+
+function Restore-PreviousApplication {
+    try {
+        if ($dataMoved -and (Test-Path -LiteralPath $newData)) {
+            Move-Item -LiteralPath $newData -Destination $oldData
+            Write-UpdateLog 'rollback_data_restored'
+        }
+        if (Test-Path -LiteralPath $current) {
+            Remove-Item -LiteralPath $current -Recurse -Force
+        }
+        Rename-Item -LiteralPath $backup -NewName $currentName
+        Write-UpdateLog 'rollback_completed'
+        if (-not $SkipLaunch) {
+            Start-Application $current
+            Write-UpdateLog 'previous_application_started'
+        }
+    }
+    catch {
+        Write-UpdateLog "rollback_failed $(($_ | Out-String).Trim())"
+    }
+}
 
 try {
     $parentPid = [int]$env:ORE_MUSIC_PLAYER_PARENT_PID
@@ -49,35 +83,37 @@ try {
         Remove-Item -LiteralPath $backup -Recurse -Force
         Write-UpdateLog "removed_previous path='$backup'"
     }
-    Rename-Item -LiteralPath $current -NewName ([System.IO.Path]::GetFileName($backup))
+    Rename-Item -LiteralPath $current -NewName $backupName
+    $renamed = $true
     Write-UpdateLog "renamed_current backup='$backup'"
     Move-Item -LiteralPath $staged -Destination $current
     Write-UpdateLog "moved_staged current='$current'"
-    $oldData = Join-Path $backup 'data'
-    $newData = Join-Path $current 'data'
     if (Test-Path -LiteralPath $oldData) {
         if (Test-Path -LiteralPath $newData) {
             Remove-Item -LiteralPath $newData -Recurse -Force
         }
         Move-Item -LiteralPath $oldData -Destination $newData
+        $dataMoved = $true
         Write-UpdateLog 'migrated_data'
     }
-    Remove-Item -LiteralPath $backup -Recurse -Force
-    Write-UpdateLog "removed_previous path='$backup'"
-    Start-Process -FilePath (Join-Path $current 'ore-music-player.exe')
+    if (-not $SkipLaunch) {
+        Start-Application $current
+    }
     Write-UpdateLog 'updated_application_started'
+    try {
+        Remove-Item -LiteralPath $backup -Recurse -Force
+        Write-UpdateLog "removed_previous path='$backup'"
+    }
+    catch {
+        Write-UpdateLog "remove_previous_failed $(($_ | Out-String).Trim())"
+    }
 }
 catch {
     $details = ($_ | Out-String).Trim()
     Write-UpdateLog "update_failed $details"
-    if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $current)) {
-        try {
-            Rename-Item -LiteralPath $backup -NewName ([System.IO.Path]::GetFileName($current))
-            Write-UpdateLog 'rollback_completed'
-        }
-        catch {
-            Write-UpdateLog "rollback_failed $(($_ | Out-String).Trim())"
-        }
+    if ($renamed) {
+        Restore-PreviousApplication
     }
-    throw
+    exit 1
 }
+
