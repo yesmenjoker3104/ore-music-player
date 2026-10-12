@@ -1,6 +1,8 @@
+import gc
 import json
 import tempfile
 import wave
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -117,6 +119,16 @@ def clear_test_settings() -> None:
     settings.sync()
 
 
+@pytest.fixture(autouse=True)
+def delete_test_windows(qt_application: QApplication) -> Iterator[None]:
+    yield
+    for widget in QApplication.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    qt_application.processEvents()
+    gc.collect()
+
+
 def make_window(
     qt_application: QApplication,
 ) -> tuple[MainWindow, FakePlaybackBackend]:
@@ -150,6 +162,7 @@ def test_switching_to_stems_stops_normal_playback(
 
     assert normal_backend.stop_calls == 1
     assert window.playback_service.backend is stem_backend
+    window.close()
 
 
 def test_playback_session_is_saved_and_restored(
