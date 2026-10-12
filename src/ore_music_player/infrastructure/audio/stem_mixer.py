@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,7 @@ class StemMixer:
     """複数ステムのリアルタイムミックスエンジン。
 
     sounddevice コールバックから呼ばれる mix_chunk() が本体。
-    GIL に頼った軽量なロック方針（probe と同様）。
+    stems の差し替え（速度変更）と mix_chunk の競合を避けるため _lock で保護する。
     """
 
     def __init__(self, stems: dict[str, np.ndarray], sample_rate: int = SAMPLE_RATE) -> None:
@@ -27,6 +28,15 @@ class StemMixer:
         self.b_point: int | None = None
         self.loop_enabled: bool = False
         self._finished: bool = False
+        self._lock = threading.Lock()
+
+    def replace_stems(self, stems: dict[str, np.ndarray], seconds: float) -> None:
+        """同じ音量設定のまま、ステムを差し替えて指定位置から再生を続ける。"""
+        with self._lock:
+            self.stems = stems
+            self.length = max(len(v) for v in stems.values()) if stems else 0
+            self.position = max(0, min(int(seconds * self.sample_rate), self.length))
+            self._finished = self.position >= self.length
 
     @property
     def position_seconds(self) -> float:
@@ -44,8 +54,9 @@ class StemMixer:
         self._master_volume = max(0.0, min(1.0, volume))
 
     def seek(self, seconds: float) -> None:
-        self.position = max(0, min(int(seconds * self.sample_rate), self.length))
-        self._finished = False
+        with self._lock:
+            self.position = max(0, min(int(seconds * self.sample_rate), self.length))
+            self._finished = False
 
     def set_a(self, seconds: float) -> None:
         self.a_point = max(0, int(seconds * self.sample_rate))
@@ -54,6 +65,10 @@ class StemMixer:
         self.b_point = max(0, int(seconds * self.sample_rate))
 
     def mix_chunk(self, frames: int) -> np.ndarray:
+        with self._lock:
+            return self._mix(frames)
+
+    def _mix(self, frames: int) -> np.ndarray:
         if self._finished:
             return np.zeros((frames, CHANNELS), dtype=np.float32)
 

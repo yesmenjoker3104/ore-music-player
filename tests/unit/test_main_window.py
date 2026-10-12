@@ -2004,7 +2004,23 @@ def test_keyboard_seek_moves_by_five_seconds(
     window.seek_forward()
     window.seek_backward()
 
-    assert backend.seek_calls[-2:] == [15.0, 10.0]
+    assert backend.seek_calls[-2:] == [13.0, 10.0]
+    window.close()
+
+
+def test_seek_buttons_move_three_seconds(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    window.load_tracks((Track("track-001", "song.mp3", "Song"),))
+    window._duration_seconds = 60.0
+    backend.position_seconds = 10.0
+
+    buttons = {button.toolTip(): button for button in window.findChildren(IconButton)}
+    buttons["3秒進む"].click()
+    buttons["3秒戻る"].click()
+
+    assert backend.seek_calls[-2:] == [13.0, 10.0]
     window.close()
 
 
@@ -2228,6 +2244,6 @@ def test_tree_delete_and_stem_volume_use_icon_buttons(
 
         assert isinstance(window._stem_volume_button, IconButton)
         assert window._stem_volume_button.art() == "stem_volume"
-        assert window._stem_volume_button.caption() == "ステム音量"
+        assert window._stem_volume_button.caption() == ""
     finally:
         window.close()
