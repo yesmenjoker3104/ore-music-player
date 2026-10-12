@@ -25,6 +25,7 @@ from ore_music_player.application.ports import PlaybackBackendError
 from ore_music_player.domain.models import Track
 from ore_music_player.ui.icon_button import IconButton
 from ore_music_player.ui.main_window import (
+    PRACTICE_STEP_BUTTON_SIZE,
     SLIDER_GROOVE_HEIGHT,
     MainWindow,
     PlaybackMode,
@@ -948,6 +949,7 @@ def test_saved_left_pane_layout_is_migrated_by_75_pixels(
     migrated_window, _ = make_window(qt_application)
     try:
         migrated_window.show()
+        migrated_window.resize(1400, migrated_window.height())
         qt_application.processEvents()
         before_width = migrated_window.main_splitter.sizes()[0]
         migrated_window._move_splitter_right()
@@ -1521,6 +1523,7 @@ def test_transport_buttons_spread_across_pane_width(
     qt_application.processEvents()
 
     control_buttons = (
+        window.left_pane_button,
         window.previous_button,
         window.play_pause_button,
         window.stop_button,
@@ -1529,6 +1532,7 @@ def test_transport_buttons_spread_across_pane_width(
         window.set_b_button,
         window.loop_button,
         window.playback_mode_button,
+        window.practice_mode_button,
     )
     player = window.playback_mode_button.parentWidget()
     gaps_by_width = {}
@@ -1817,6 +1821,123 @@ def test_speed_slider_updates_current_speed_and_backend(
     window.close()
 
 
+def _icon_button_by_tip(window: MainWindow, tip: str) -> IconButton:
+    return next(
+        button
+        for button in window.findChildren(IconButton)
+        if button.toolTip() == tip
+    )
+
+
+def test_step_buttons_adjust_speed_and_volume(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+
+    _icon_button_by_tip(window, "再生速度を上げる").click()
+    assert window.speed_slider.value() == 11
+    assert window.speed_current_label.text() == "1.05x"
+    assert backend.speed_calls[-1] == pytest.approx(1.05)
+
+    _icon_button_by_tip(window, "再生速度を下げる").click()
+    _icon_button_by_tip(window, "再生速度を下げる").click()
+    assert window.speed_slider.value() == 9
+    assert backend.speed_calls[-1] == pytest.approx(0.95)
+
+    window.volume_slider.setValue(98)
+    _icon_button_by_tip(window, "音量を上げる").click()
+    assert window.volume_slider.value() == 100
+    assert backend.volume_calls[-1] == 100.0
+
+    _icon_button_by_tip(window, "音量を下げる").click()
+    assert window.volume_slider.value() == 95
+    assert window.volume_value_label.text() == "95"
+    assert backend.volume_calls[-1] == 95.0
+
+    window.close()
+
+
+def test_speed_reset_button_returns_to_default_speed(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    window.speed_slider.setValue(16)
+    assert window.speed_current_label.text() == "1.30x"
+
+    _icon_button_by_tip(window, "再生速度を1.00xに戻す").click()
+
+    assert window.speed_slider.value() == 10
+    assert window.speed_current_label.text() == "1.00x"
+    assert backend.speed_calls[-1] == pytest.approx(1.0)
+    window.close()
+
+
+def test_mute_button_silences_backend_and_keeps_slider_value(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    window.volume_slider.setValue(70)
+    mute_button = _icon_button_by_tip(window, "ミュート")
+
+    mute_button.click()
+
+    assert backend.volume_calls[-1] == 0.0
+    assert window.volume_slider.value() == 70
+    assert window.volume_value_label.text() == "70"
+    assert _icon_button_by_tip(window, "ミュート解除") is mute_button
+
+    mute_button.click()
+
+    assert backend.volume_calls[-1] == 70.0
+    assert _icon_button_by_tip(window, "ミュート") is mute_button
+    window.close()
+
+
+def test_moving_volume_slider_while_muted_unmutes(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    window.volume_slider.setValue(70)
+    mute_button = _icon_button_by_tip(window, "ミュート")
+    mute_button.click()
+    assert backend.volume_calls[-1] == 0.0
+
+    window.volume_slider.setValue(50)
+
+    assert backend.volume_calls[-1] == 50.0
+    assert _icon_button_by_tip(window, "ミュート") is mute_button
+    window.close()
+
+
+def test_step_buttons_scale_in_practice_mode(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    window.show()
+    qt_application.processEvents()
+    control_tips = [
+        "再生速度を下げる",
+        "再生速度を上げる",
+        "再生速度を1.00xに戻す",
+        "ミュート",
+        "音量を下げる",
+        "音量を上げる",
+    ]
+    normal_size = _icon_button_by_tip(window, control_tips[0]).width()
+
+    window.set_practice_mode(True)
+    qt_application.processEvents()
+    for tip in control_tips:
+        assert _icon_button_by_tip(window, tip).width() == PRACTICE_STEP_BUTTON_SIZE
+
+    window.set_practice_mode(False)
+    qt_application.processEvents()
+    for tip in control_tips:
+        assert _icon_button_by_tip(window, tip).width() == normal_size
+
+    window.close()
+
+
 def test_volume_slider_is_small_and_updates_backend(
     qt_application: QApplication,
 ) -> None:
@@ -1929,8 +2050,8 @@ def test_seek_and_speed_sliders_share_width_and_thickness(
         window.position_slider.minimumHeight()
         == window.speed_slider.minimumHeight()
     )
-    assert window.position_slider.styleSheet() == window.speed_slider.styleSheet()
     assert "height: 18px" in window.position_slider.styleSheet()
+    assert "height: 18px" in window.speed_slider.styleSheet()
 
     window.close()
 
