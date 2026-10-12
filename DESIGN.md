@@ -25,7 +25,6 @@
 | UI | 実装済み | PySide6の左右分割画面。ファイルツリー検索、複数ファイル・フォルダ読み込み、登録解除、再生操作、プレイリスト、A/B操作、音量、再生履歴に対応。再生コントロールは QGroupBox でセクション区切り |
 | 設定管理 | 実装済み | INIファイルへの保存・復元。旧レジストリ設定からの自動移行 |
 | 自動アップデート | 実装済み | GitHub Releases からダウンロードして適用。404時（Releases未公開）は無視 |
-| 再生トレース | 実装済み | 操作履歴を `data/playback-trace.jsonl` へ記録 |
 | 音源分離 | 実装済み | 右クリックメニューから Demucs（htdemucs_6s）で分離。初回時に embeddable Python 環境を自動構築 |
 | ステム再生 | 実装済み | 分離済みトラックの再生時に `StemPlaybackBackend` に切り替え。「ステム音量」ボタンから小ウィンドウで各パート音量を調整 |
 | 分析 | 未実装 | コード進行分析 |
@@ -64,7 +63,6 @@ ore-music-player/
 │       │   ├── __init__.py
 │       │   ├── settings.py
 │       │   ├── update_service.py
-│       │   ├── playback_trace.py
 │       │   ├── apply_update.ps1
 │       │   ├── audio/
 │       │   │   ├── __init__.py
@@ -158,7 +156,6 @@ ore-music-player/
 | `src/ore_music_player/infrastructure/settings.py` | INI ファイル形式で `QSettings` を生成する。旧レジストリ設定（`OreMusicPlayer\OreMusicPlayer`）からの一回限りの移行を担当する。 | UI イベント、再生制御。 |
 | `src/ore_music_player/infrastructure/update_service.py` | GitHub Releases API で最新バージョンを確認し、ZIP アーカイブをダウンロード・展開・検証する。PowerShell スクリプト経由でアプリを差し替える。Releases が存在しない場合（404）は更新なしとして扱う。 | UI ダイアログの表示、再生制御。 |
 | `src/ore_music_player/infrastructure/apply_update.ps1` | 旧プロセスの終了を待ってから実行ファイルを差し替え、新バージョンを起動する PowerShell スクリプト。差し替えに失敗した場合は旧バージョンに戻して再起動する。アプリフォルダ内を作業ディレクトリにするとリネームできないため、起動元は一時フォルダにする。 | バージョン比較、ダウンロード。 |
-| `src/ore_music_player/infrastructure/playback_trace.py` | 再生操作イベントを JSONL 形式で `data/playback-trace.jsonl` へ記録する。デバッグ用途。 | 再生制御、UI 表示。 |
 | `src/ore_music_player/infrastructure/audio/__init__.py` | 音声バックエンド実装の公開 API をまとめる。 | 再生キューやプレイリストの管理。 |
 | `src/ore_music_player/infrastructure/audio/metadata.py` | mutagen 等を使って音声ファイルから再生時間を読み取る。 | 再生制御、プレイリスト保存。 |
 | `src/ore_music_player/infrastructure/audio/playback_backend.py` | `python-mpv` と libmpv をラップする。音声出力、シーク、A/B境界、速度変更、ピッチ補正を扱う。 | プレイリストの保存、Qt画面の操作、分析結果の表示。 |
@@ -352,7 +349,7 @@ bootstrap -> ui + application + infrastructure
 - 左ペインにファイルツリーを表示し、ファイル名と再生時間を2列で表示する。
 - 左ペイン上部に表示ルートと「削除」ボタンを配置する。
 - 現在の曲名と再生状態を表示する。
-- 再生位置とシーク操作を表示する。スライダー上にA地点・B地点をマーキングする。
+- 再生位置とシーク操作を表示する。スライダーは速度・音量と同じオレンジのアクセントスタイル。スライダー上にA地点・B地点をマーキングする。
 - 再生、一時停止、停止、前後移動を表示する。
 - A設定、B設定、A/Bループ、再生モードを表示する。
 - 再生操作ボタンは1行に並べ、右ペインの幅いっぱいに広げる。ボタンの大きさは96pxで固定し、ボタン同士の間隔を幅に応じて伸縮させる。
@@ -365,7 +362,7 @@ bootstrap -> ui + application + infrastructure
 - SVGは `src/ore_music_player/assets/` に置く。描画は `ui/icon_button.py` の `IconButton` が担当する。
 - 再生モードのアイコンは全曲ループ `repeat_all`、ランダム `shuffle`、1曲ループ `repeat_one`。
 - QtSvgはぼかしフィルタ・入れ子の `<svg>`・角丸クリップ（clipPath）に対応しない。グロウは低い `stroke-opacity` の重ね描き、角丸は arc 付きの path で表現する。
-- `0.50x`〜`1.50x` の速度スライダーを表示する。速度は左右の −/+ ボタンで 0.05x ずつ変更する。右端の「再生速度を1.00xに戻す」ボタン（`speed_reset`）で初期値 `1.00x` に戻す。
+- `0.50x`〜`1.50x` の速度スライダーを表示する。速度は左右の −/+ ボタンで 0.05x ずつ変更する。右端の「再生速度を1.00xに戻す」ボタン（`speed_reset`、速度計の図柄）で初期値 `1.00x` に戻す。
 - 音量スライダーを表示する。音量は左右の −/+ ボタンで 5 ずつ変更する。左端のミュートボタン（`volume_mute` / `volume_mute_on`）で音を消す・戻す。
 - 速度・音量の現在値はスライダー右側のバッジ（`valueBadge`）に表示する。
 - −/+ ボタン・リセット・ミュートは再生操作と同じ `IconButton` で、アート名は `step_minus` / `step_plus` / `speed_reset` / `volume_mute`（`volume_mute_on` は押下中の見た目のミュート状態）。サイズは 44px。練習モードでは `PRACTICE_STEP_BUTTON_SIZE`（36px）に拡大して操作しやすくする（他の操作要素は50%）。

@@ -1,4 +1,3 @@
-import json
 import os
 import subprocess
 import sys
@@ -16,10 +15,8 @@ from ore_music_player.infrastructure.update_service import (
     _version_key,
     fetch_latest_release,
     is_newer_version,
-    log_update_event,
     prepare_update,
     start_update_process,
-    update_log_path,
     update_script_path,
 )
 
@@ -57,36 +54,6 @@ def test_prepare_update_rejects_archive_without_executable(tmp_path: Path) -> No
         prepare_update(archive_path, tmp_path / "staged")
 
 
-def test_log_update_event_writes_json_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-
-    log_update_event("download_failed", archive=tmp_path / "update.zip")
-
-    log_file = update_log_path()
-    payload = json.loads(log_file.read_text(encoding="utf-8").splitlines()[-1])
-    assert payload["event"] == "download_failed"
-    assert payload["archive"] == str(tmp_path / "update.zip")
-
-
-def test_start_update_process_passes_log_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-    monkeypatch.setattr("ore_music_player.infrastructure.update_service.sys.platform", "win32")
-
-    with patch("ore_music_player.infrastructure.update_service.subprocess.Popen") as popen:
-        start_update_process(
-            tmp_path / "staged" / "ore-music-player",
-            tmp_path / "ore-music-player",
-            tmp_path / "apply_update.ps1",
-        )
-
-    command = popen.call_args.args[0]
-    assert "-LogPath" in command
-    assert str(update_log_path()) in command
-
-
 def test_start_update_process_runs_outside_application_folder(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -115,7 +82,6 @@ def _exited_process_id() -> int:
 def _run_apply_script(
     current_application: Path,
     staged_application: Path,
-    log_path: Path,
     working_directory: Path,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
@@ -128,8 +94,6 @@ def _run_apply_script(
             "Bypass",
             "-File",
             str(update_script_path()),
-            "-LogPath",
-            str(log_path),
             "-CurrentApplication",
             str(current_application),
             "-StagedApplication",
@@ -158,7 +122,6 @@ def test_apply_update_script_replaces_application(tmp_path: Path) -> None:
     result = _run_apply_script(
         current_application,
         staged_application,
-        tmp_path / "update.log",
         working_directory=tmp_path,
     )
 
@@ -174,16 +137,13 @@ def test_apply_update_script_restores_previous_application_on_failure(tmp_path: 
     current_application = tmp_path / "ore-music-player"
     current_application.mkdir()
     (current_application / "ore-music-player.exe").write_bytes(b"old")
-    log_path = tmp_path / "update.log"
 
     result = _run_apply_script(
         current_application,
         tmp_path / "missing" / "ore-music-player",
-        log_path,
         working_directory=tmp_path,
     )
 
     assert result.returncode == 1
     assert (current_application / "ore-music-player.exe").read_bytes() == b"old"
     assert not (tmp_path / "ore-music-player.previous").exists()
-    assert "rollback_completed" in log_path.read_text(encoding="utf-8")

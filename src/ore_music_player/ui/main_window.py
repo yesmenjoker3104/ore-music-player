@@ -4,7 +4,6 @@ import json
 import random
 import shutil
 import sys
-import traceback
 from collections.abc import Callable
 from dataclasses import replace
 from enum import StrEnum
@@ -76,17 +75,14 @@ from ore_music_player.infrastructure.audio.metadata import read_duration_seconds
 from ore_music_player.infrastructure.audio.stem_playback_backend import (
 	StemPlaybackBackend,
 )
-from ore_music_player.infrastructure.playback_trace import trace_playback_event
 from ore_music_player.infrastructure.settings import load_settings
 from ore_music_player.infrastructure.update_service import (
 	ReleaseInfo,
 	download_release,
 	fetch_latest_release,
-	log_update_event,
 	make_update_workspace,
 	prepare_update,
 	start_update_process,
-	update_log_path,
 	update_script_path,
 )
 from ore_music_player.ui.icon_button import IconButton
@@ -545,7 +541,6 @@ class UpdateWorker(QThread):
 
 	def run(self) -> None:
 		workspace: Path | None = None
-		log_update_event("worker_started")
 		try:
 			release = fetch_latest_release()
 			if release is None:
@@ -562,11 +557,6 @@ class UpdateWorker(QThread):
 			)
 			self.update_ready.emit((release, staged_application))
 		except Exception as error:
-			log_update_event(
-				"worker_failed",
-				error=str(error),
-				traceback=traceback.format_exc(),
-			)
 			if workspace is not None:
 				shutil.rmtree(workspace, ignore_errors=True)
 			self.failed.emit(str(error))
@@ -968,7 +958,7 @@ class MainWindow(QMainWindow):
 		self.position_label = QLabel("0:00")
 		self.duration_label = QLabel("--:--")
 		self.position_slider = PositionSlider()
-		self._configure_slider(self.position_slider)
+		self._configure_slider(self.position_slider, accent=True)
 		self.position_slider.setRange(0, 0)
 		self.position_slider.setEnabled(False)
 		self.position_slider.setTracking(True)
@@ -1297,7 +1287,7 @@ class MainWindow(QMainWindow):
 		for button in self.findChildren(IconButton):
 			is_step = button.objectName() == "stepButton"
 			button.set_scale(step_scale if is_step else scale)
-		self._configure_slider(self.position_slider, scale)
+		self._configure_slider(self.position_slider, scale, accent=True)
 		self._configure_slider(self.speed_slider, scale, accent=True)
 		self._configure_slider(self.volume_slider, scale, accent=True)
 		self.speed_slider.setFixedWidth(round(SPEED_SLIDER_WIDTH * scale))
@@ -1729,7 +1719,7 @@ class MainWindow(QMainWindow):
 		QMessageBox.critical(
 			self,
 			"更新失敗",
-			f"更新を確認できませんでした。\n{message}\n\nログ: {update_log_path()}",
+			f"更新を確認できませんでした。\n{message}",
 		)
 
 	def _update_finished(self) -> None:
@@ -1875,13 +1865,6 @@ class MainWindow(QMainWindow):
 		self._update_file_tree_visibility()
 
 	def _load_file_from_tree(self, index: QModelIndex) -> None:
-		trace_playback_event(
-			"tree_double_clicked",
-			index_valid=index.isValid(),
-			index_path=(self.file_system_model.filePath(index) if index.isValid() else None),
-			current_path=(self._current_track.path if self._current_track else None),
-			queue_index=self._queue_index,
-		)
 		if not index.isValid() or self.file_system_model.isDir(index):
 			return
 		path = Path(self.file_system_model.filePath(index))
@@ -2423,13 +2406,6 @@ class MainWindow(QMainWindow):
 		if not current.isValid():
 			return
 		selected_path = Path(self.file_system_model.filePath(current))
-		trace_playback_event(
-			"tree_current_changed",
-			path=str(selected_path),
-			is_dir=self.file_system_model.isDir(current),
-			current_path=(self._current_track.path if self._current_track else None),
-			queue_index=self._queue_index,
-		)
 		folder_path = (
 			selected_path if self.file_system_model.isDir(current) else selected_path.parent
 		)
@@ -2446,13 +2422,6 @@ class MainWindow(QMainWindow):
 
 	def _select_file_path(self, path: str | Path, autoplay: bool) -> None:
 		path = self._normalize_path(path)
-		trace_playback_event(
-			"select_file_path",
-			path=str(path),
-			autoplay=autoplay,
-			current_path=(self._current_track.path if self._current_track else None),
-			queue_index=self._queue_index,
-		)
 		if (
 			autoplay
 			and self._is_playing
@@ -2506,13 +2475,6 @@ class MainWindow(QMainWindow):
 
 	def _load_current_track(self, autoplay: bool) -> None:
 		self._current_track = self._queue[self._queue_index]
-		trace_playback_event(
-			"load_current_track",
-			path=self._current_track.path,
-			autoplay=autoplay,
-			queue_index=self._queue_index,
-			track_id=self._current_track.track_id,
-		)
 		self._record_recent_path(self._current_track.path)
 		self.file_system_model.set_playing_path(self._current_track.path)
 		self.playlist_view.set_playing_track(
@@ -2601,15 +2563,6 @@ class MainWindow(QMainWindow):
 			self.play()
 
 	def play(self) -> None:
-		trace_playback_event(
-			"ui_play_requested",
-			selected_paths=[
-				self.file_system_model.filePath(index)
-				for index in self.file_tree.selectionModel().selectedRows(0)
-			],
-			current_path=(self._current_track.path if self._current_track else None),
-			queue_index=self._queue_index,
-		)
 		selected_rows = self.file_tree.selectionModel().selectedRows(0)
 		if selected_rows:
 			selected_path = Path(self.file_system_model.filePath(selected_rows[0]))
