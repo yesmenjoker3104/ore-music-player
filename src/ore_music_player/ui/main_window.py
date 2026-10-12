@@ -15,11 +15,13 @@ from uuid import uuid4
 from PySide6.QtCore import (
 	QAbstractProxyModel,
 	QByteArray,
+	QCoreApplication,
 	QDir,
 	QItemSelectionModel,
 	QModelIndex,
 	QPointF,
 	QRectF,
+	QSize,
 	Qt,
 	QThread,
 	QTimer,
@@ -97,6 +99,7 @@ from ore_music_player.ui.utils import format_duration
 from ore_music_player.version import __version__
 
 PRACTICE_MODE_SCALE = 0.5
+PRACTICE_STEP_BUTTON_SIZE = 36
 TILE_GRID_SPACING = 4
 SPEED_SLIDER_WIDTH = 160
 SUPPORTED_AUDIO_SUFFIXES = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
@@ -105,6 +108,31 @@ SEEK_SCALE = 1000
 SLIDER_GROOVE_HEIGHT = 18
 SLIDER_HANDLE_SIZE = 28
 SLIDER_MINIMUM_HEIGHT = 44
+STEP_BUTTON_SIZE = 44
+VALUE_BADGE_WIDTH = 80
+VOLUME_STEP = 5
+
+
+def _value_badge_style(scale: float) -> str:
+	radius = round(8 * scale)
+	font_size = round(16 * scale)
+	return f"""
+	QLabel#valueBadge {{
+		color: #ffb020;
+		background: #201a14;
+		border: 2px solid #c86a1e;
+		border-radius: {radius}px;
+		font-size: {font_size}px;
+		font-weight: bold;
+		padding: 2px 6px;
+	}}
+	"""
+
+
+def _style_value_badge(label: QLabel, scale: float) -> None:
+	label.setMinimumWidth(round(VALUE_BADGE_WIDTH * scale))
+	label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+	label.setStyleSheet(_value_badge_style(scale))
 
 
 def _slider_style(scale: float) -> str:
@@ -147,6 +175,39 @@ QSlider::sub-page:horizontal:disabled {{
 QSlider::handle:horizontal:disabled {{
 	background: #f3f4f6;
 	border-color: #aeb5c0;
+}}
+"""
+
+
+def _accent_slider_style(scale: float) -> str:
+	def px(value: float) -> int:
+		return round(value * scale)
+
+	return f"""
+QSlider {{
+	min-height: {px(SLIDER_MINIMUM_HEIGHT)}px;
+}}
+QSlider::groove:horizontal {{
+	height: {px(SLIDER_GROOVE_HEIGHT)}px;
+	background: #201a14;
+	border: 1px solid #c86a1e;
+	border-radius: {px(9)}px;
+}}
+QSlider::sub-page:horizontal {{
+	background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #c86a1e, stop:1 #ffb020);
+	border-radius: {px(9)}px;
+}}
+QSlider::add-page:horizontal {{
+	background: #201a14;
+	border-radius: {px(9)}px;
+}}
+QSlider::handle:horizontal {{
+	width: {px(SLIDER_HANDLE_SIZE)}px;
+	height: {px(SLIDER_HANDLE_SIZE)}px;
+	margin: {px(-5)}px 0;
+	background: #ffb020;
+	border: 2px solid #ffe9a0;
+	border-radius: {px(14)}px;
 }}
 """
 
@@ -795,33 +856,34 @@ class MainWindow(QMainWindow):
 		)
 		self.track_label.setSizePolicy(label_size_policy)
 		self.status_label.setSizePolicy(label_size_policy)
-		track_status_layout = QHBoxLayout()
-		track_status_layout.setContentsMargins(0, 0, 0, 0)
-		track_status_layout.setSpacing(0)
-		self.left_pane_button = self._create_control_button(
-			"",
-			"left_pane_on",
-			self.toggle_left_pane,
-			48,
+		self.track_label.setObjectName("trackLabel")
+		self.track_label.setStyleSheet(
+			"QLabel#trackLabel {"
+			" color: #ffb020;"
+			" font-weight: bold;"
+			" font-size: 15px;"
+			" background: #201a14;"
+			" border: 2px solid #c86a1e;"
+			" border-radius: 10px;"
+			" padding: 6px 14px;"
+			"}"
 		)
-		self._update_left_pane_button()
-		track_status_layout.addWidget(self.left_pane_button)
-		track_status_layout.addWidget(self.track_label, 1)
-		self.practice_mode_button = self._create_control_button(
-			"",
-			"practice_mode",
-			self.toggle_practice_mode,
-			48,
-		)
-		self._update_practice_mode_button()
-		track_status_layout.addWidget(self.practice_mode_button)
-		player_layout.addLayout(track_status_layout)
+		player_layout.addWidget(self.track_label)
 
 		button_row = QHBoxLayout()
 		button_row.setContentsMargins(0, 0, 0, 0)
 		button_row.setSpacing(0)
 
 		control_button_size = 96
+		self.left_pane_button = self._create_control_button(
+			"",
+			"left_pane_on",
+			self.toggle_left_pane,
+			control_button_size,
+		)
+		self._update_left_pane_button()
+		button_row.addWidget(self.left_pane_button)
+		button_row.addStretch(1)
 		self.previous_button = self._create_control_button(
 			"前の曲",
 			"prev",
@@ -892,6 +954,15 @@ class MainWindow(QMainWindow):
 		self._update_playback_mode_button()
 		button_row.addStretch(1)
 		button_row.addWidget(self.playback_mode_button)
+		self.practice_mode_button = self._create_control_button(
+			"",
+			"practice_mode",
+			self.toggle_practice_mode,
+			control_button_size,
+		)
+		self._update_practice_mode_button()
+		button_row.addStretch(1)
+		button_row.addWidget(self.practice_mode_button)
 		player_layout.addLayout(button_row)
 
 		self.position_label = QLabel("0:00")
@@ -913,9 +984,8 @@ class MainWindow(QMainWindow):
 		pos_inner.addWidget(self.position_slider, 1)
 		pos_inner.addWidget(self.duration_label)
 
-		min_speed_label = QLabel(f"{MIN_PLAYBACK_SPEED:.2f}x")
 		self.speed_slider = QSlider()
-		self._configure_slider(self.speed_slider)
+		self._configure_slider(self.speed_slider, accent=True)
 		self.speed_slider.setFixedWidth(SPEED_SLIDER_WIDTH)
 		speed_steps = int(
 			(MAX_PLAYBACK_SPEED - MIN_PLAYBACK_SPEED)
@@ -929,35 +999,91 @@ class MainWindow(QMainWindow):
 			)
 		)
 		self.speed_slider.valueChanged.connect(self.change_speed)
-		self.speed_min_label = min_speed_label
 		self.speed_current_label = QLabel()
+		self.speed_current_label.setObjectName("valueBadge")
+		_style_value_badge(self.speed_current_label, 1.0)
+		speed_down_button = self._create_control_button(
+			"再生速度を下げる",
+			"step_minus",
+			lambda: self._step_slider(self.speed_slider, -1),
+			STEP_BUTTON_SIZE,
+		)
+		speed_up_button = self._create_control_button(
+			"再生速度を上げる",
+			"step_plus",
+			lambda: self._step_slider(self.speed_slider, 1),
+			STEP_BUTTON_SIZE,
+		)
+		speed_reset_button = self._create_control_button(
+			"再生速度を1.00xに戻す",
+			"speed_reset",
+			lambda: self.speed_slider.setValue(
+				int((DEFAULT_PLAYBACK_SPEED - MIN_PLAYBACK_SPEED) / PLAYBACK_SPEED_STEP)
+			),
+			STEP_BUTTON_SIZE,
+		)
 
 		speed_box = QGroupBox("再生速度")
 		speed_inner = QHBoxLayout(speed_box)
 		speed_inner.setContentsMargins(8, 4, 8, 4)
 		speed_inner.setSpacing(8)
-		speed_inner.addWidget(min_speed_label)
+		speed_inner.addWidget(speed_down_button)
 		speed_inner.addWidget(self.speed_slider)
+		speed_inner.addWidget(speed_up_button)
 		speed_inner.addWidget(self.speed_current_label)
+		speed_inner.addWidget(speed_reset_button)
 
-		self.volume_min_label = QLabel("0")
 		self.volume_value_label = QLabel()
+		self.volume_value_label.setObjectName("valueBadge")
+		_style_value_badge(self.volume_value_label, 1.0)
 		self.volume_slider = QSlider(Qt.Orientation.Horizontal)
-		self._configure_slider(self.volume_slider)
+		self._configure_slider(self.volume_slider, accent=True)
 		self.volume_slider.setRange(0, 100)
 		saved_volume = self._settings.value(self._VOLUME_KEY, 100, type=int)
 		self.volume_slider.setValue(max(0, min(100, saved_volume)))
 		self.volume_slider.setFixedWidth(SPEED_SLIDER_WIDTH)
 		self.volume_slider.setToolTip("音量")
+		self._muted = False
 		self.volume_slider.valueChanged.connect(self.change_volume)
 		self.change_volume(self.volume_slider.value())
+
+		self.volume_mute_button = self._create_control_button(
+			"ミュート",
+			"volume_mute",
+			self._toggle_mute,
+			STEP_BUTTON_SIZE,
+		)
+		volume_down_button = self._create_control_button(
+			"音量を下げる",
+			"step_minus",
+			lambda: self._step_slider(self.volume_slider, -VOLUME_STEP),
+			STEP_BUTTON_SIZE,
+		)
+		volume_up_button = self._create_control_button(
+			"音量を上げる",
+			"step_plus",
+			lambda: self._step_slider(self.volume_slider, VOLUME_STEP),
+			STEP_BUTTON_SIZE,
+		)
+
+		for step_button in (
+			speed_down_button,
+			speed_up_button,
+			speed_reset_button,
+			self.volume_mute_button,
+			volume_down_button,
+			volume_up_button,
+		):
+			step_button.setObjectName("stepButton")
 
 		volume_box = QGroupBox("音量")
 		volume_inner = QHBoxLayout(volume_box)
 		volume_inner.setContentsMargins(8, 4, 8, 4)
 		volume_inner.setSpacing(8)
-		volume_inner.addWidget(self.volume_min_label)
+		volume_inner.addWidget(self.volume_mute_button)
+		volume_inner.addWidget(volume_down_button)
 		volume_inner.addWidget(self.volume_slider)
+		volume_inner.addWidget(volume_up_button)
 		volume_inner.addWidget(self.volume_value_label)
 
 		self._stem_volume_button = self._create_control_button(
@@ -1140,8 +1266,7 @@ class MainWindow(QMainWindow):
 		self._apply_practice_scale(enabled)
 		if enabled:
 			self.showNormal()
-			self.layout().activate()
-			self.resize(self.minimumSizeHint())
+			self._fit_window_to_minimum_size()
 			return
 		saved = self._practice_saved_layout
 		self._practice_saved_layout = None
@@ -1155,15 +1280,34 @@ class MainWindow(QMainWindow):
 			self.setGeometry(saved["geometry"])
 			self.showNormal()
 
+	def _fit_window_to_minimum_size(self) -> None:
+		# Layout updates from the mode switch are still queued, so flush them
+		# before reading the minimum; otherwise resize() is clamped to the
+		# normal-layout size.
+		self.setMinimumSize(QSize(0, 0))
+		QCoreApplication.sendPostedEvents()
+		self.layout().activate()
+		minimum = self.minimumSizeHint()
+		self.setMinimumSize(minimum)
+		self.resize(minimum)
+
 	def _apply_practice_scale(self, enabled: bool) -> None:
 		scale = PRACTICE_MODE_SCALE if enabled else 1.0
+		step_scale = PRACTICE_STEP_BUTTON_SIZE / STEP_BUTTON_SIZE if enabled else 1.0
 		for button in self.findChildren(IconButton):
-			button.set_scale(scale)
+			is_step = button.objectName() == "stepButton"
+			button.set_scale(step_scale if is_step else scale)
 		self._configure_slider(self.position_slider, scale)
-		self._configure_slider(self.speed_slider, scale)
-		self._configure_slider(self.volume_slider, scale)
+		self._configure_slider(self.speed_slider, scale, accent=True)
+		self._configure_slider(self.volume_slider, scale, accent=True)
 		self.speed_slider.setFixedWidth(round(SPEED_SLIDER_WIDTH * scale))
 		self.volume_slider.setFixedWidth(round(SPEED_SLIDER_WIDTH * scale))
+		for badge in self.findChildren(QLabel, "valueBadge"):
+			_style_value_badge(badge, scale)
+
+	def _step_slider(self, slider: QSlider, delta: int) -> None:
+		slider.setValue(slider.value() + delta)
+
 	def _update_practice_mode_button(self) -> None:
 		if self._practice_mode:
 			self.practice_mode_button.set_art("practice_mode_on")
@@ -1675,10 +1819,15 @@ class MainWindow(QMainWindow):
 			self._shortcuts.append(shortcut)
 
 	@staticmethod
-	def _configure_slider(slider: QSlider, scale: float = 1.0) -> None:
+	def _configure_slider(
+		slider: QSlider,
+		scale: float = 1.0,
+		accent: bool = False,
+	) -> None:
 		slider.setOrientation(Qt.Orientation.Horizontal)
 		slider.setMinimumHeight(round(SLIDER_MINIMUM_HEIGHT * scale))
-		slider.setStyleSheet(_slider_style(scale))
+		style = _accent_slider_style if accent else _slider_style
+		slider.setStyleSheet(style(scale))
 
 	def open_files(self) -> None:
 		file_paths, _ = QFileDialog.getOpenFileNames(
@@ -2730,7 +2879,27 @@ class MainWindow(QMainWindow):
 
 	def change_volume(self, slider_value: int) -> None:
 		self.volume_value_label.setText(str(slider_value))
-		self.playback_service.set_volume(float(slider_value))
+		if self._muted:
+			self._muted = False
+			self._update_mute_button()
+		self._apply_volume()
+
+	def _apply_volume(self) -> None:
+		volume = 0.0 if self._muted else float(self.volume_slider.value())
+		self.playback_service.set_volume(volume)
+
+	def _toggle_mute(self) -> None:
+		self._muted = not self._muted
+		self._update_mute_button()
+		self._apply_volume()
+
+	def _update_mute_button(self) -> None:
+		if self._muted:
+			self.volume_mute_button.set_art("volume_mute_on")
+			self.volume_mute_button.set_label("ミュート解除")
+		else:
+			self.volume_mute_button.set_art("volume_mute")
+			self.volume_mute_button.set_label("ミュート")
 
 	# ------------------------------------------------------------------
 	# 音源分離
