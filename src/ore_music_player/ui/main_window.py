@@ -96,11 +96,14 @@ from ore_music_player.version import __version__
 
 PRACTICE_MODE_SCALE = 0.5
 PRACTICE_STEP_BUTTON_SIZE = 36
+STEM_VOLUME_BUTTON_SIZE = 72
+PRACTICE_STEM_VOLUME_BUTTON_SIZE = 56
 TILE_GRID_SPACING = 4
 SPEED_SLIDER_WIDTH = 160
 SUPPORTED_AUDIO_SUFFIXES = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
 SUPPORTED_AUDIO_NAME_FILTERS = [f"*{suffix}" for suffix in SUPPORTED_AUDIO_SUFFIXES]
 SEEK_SCALE = 1000
+SEEK_STEP_SECONDS = 3.0
 SLIDER_GROOVE_HEIGHT = 18
 SLIDER_HANDLE_SIZE = 28
 SLIDER_MINIMUM_HEIGHT = 44
@@ -966,12 +969,29 @@ class MainWindow(QMainWindow):
 		self.position_slider.sliderMoved.connect(self._preview_seek)
 		self.position_slider.sliderReleased.connect(self._finish_seeking)
 
+		seek_back_button = self._create_control_button(
+			f"{SEEK_STEP_SECONDS:g}秒戻る",
+			"step_minus",
+			self.seek_backward,
+			STEP_BUTTON_SIZE,
+		)
+		seek_forward_button = self._create_control_button(
+			f"{SEEK_STEP_SECONDS:g}秒進む",
+			"step_plus",
+			self.seek_forward,
+			STEP_BUTTON_SIZE,
+		)
+		seek_back_button.setObjectName("stepButton")
+		seek_forward_button.setObjectName("stepButton")
+
 		pos_box = QGroupBox("再生位置")
 		pos_inner = QHBoxLayout(pos_box)
 		pos_inner.setContentsMargins(8, 4, 8, 4)
 		pos_inner.setSpacing(8)
 		pos_inner.addWidget(self.position_label)
+		pos_inner.addWidget(seek_back_button)
 		pos_inner.addWidget(self.position_slider, 1)
+		pos_inner.addWidget(seek_forward_button)
 		pos_inner.addWidget(self.duration_label)
 
 		self.speed_slider = QSlider()
@@ -1080,9 +1100,8 @@ class MainWindow(QMainWindow):
 			"ステム音量",
 			"stem_volume",
 			self._open_stem_volume_dialog,
-			72,
+			STEM_VOLUME_BUTTON_SIZE,
 		)
-		self._stem_volume_button.set_caption("ステム音量")
 		self._stem_volume_button.setVisible(False)
 
 		controls_row = QHBoxLayout()
@@ -1284,9 +1303,14 @@ class MainWindow(QMainWindow):
 	def _apply_practice_scale(self, enabled: bool) -> None:
 		scale = PRACTICE_MODE_SCALE if enabled else 1.0
 		step_scale = PRACTICE_STEP_BUTTON_SIZE / STEP_BUTTON_SIZE if enabled else 1.0
+		stem_scale = PRACTICE_STEM_VOLUME_BUTTON_SIZE / STEM_VOLUME_BUTTON_SIZE if enabled else 1.0
 		for button in self.findChildren(IconButton):
-			is_step = button.objectName() == "stepButton"
-			button.set_scale(step_scale if is_step else scale)
+			if button.objectName() == "stepButton":
+				button.set_scale(step_scale)
+			elif button is self._stem_volume_button:
+				button.set_scale(stem_scale)
+			else:
+				button.set_scale(scale)
 		self._configure_slider(self.position_slider, scale, accent=True)
 		self._configure_slider(self.speed_slider, scale, accent=True)
 		self._configure_slider(self.volume_slider, scale, accent=True)
@@ -2602,10 +2626,10 @@ class MainWindow(QMainWindow):
 		self._set_playback_status("停止中", is_playing=False)
 
 	def seek_backward(self) -> None:
-		self._seek_relative(-5.0)
+		self._seek_relative(-SEEK_STEP_SECONDS)
 
 	def seek_forward(self) -> None:
-		self._seek_relative(5.0)
+		self._seek_relative(SEEK_STEP_SECONDS)
 
 	def _seek_relative(self, offset_seconds: float) -> None:
 		if self._current_track is None:
@@ -2987,7 +3011,6 @@ class MainWindow(QMainWindow):
 			if self.playback_service.backend is not self._stem_backend:
 				self.playback_service.backend.stop()
 			self.playback_service.backend = self._stem_backend
-			self._stem_backend.load(track)
 			self._apply_stem_volume_values()
 			self._stem_volume_button.setVisible(True)
 			if hasattr(self, "_stem_volume_dialog") and self._stem_volume_dialog is not None:
