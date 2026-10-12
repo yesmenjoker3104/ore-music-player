@@ -17,6 +17,17 @@ $oldData = Join-Path $backup 'data'
 $newData = Join-Path $current 'data'
 $renamed = $false
 $dataMoved = $false
+$logPath = Join-Path ([System.IO.Path]::GetTempPath()) 'ore-music-player-update.log'
+
+function Write-UpdateLog {
+    param([string]$Message)
+
+    try {
+        Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message)
+    }
+    catch {
+    }
+}
 
 function Start-Application {
     param([string]$ApplicationDirectory)
@@ -42,6 +53,7 @@ function Restore-PreviousApplication {
 }
 
 try {
+    Write-UpdateLog ("update started: current={0} staged={1}" -f $current, $staged)
     $parentPid = [int]$env:ORE_MUSIC_PLAYER_PARENT_PID
     if ($parentPid -le 0) {
         throw 'ORE_MUSIC_PLAYER_PARENT_PID is missing or invalid'
@@ -72,7 +84,9 @@ try {
     }
 }
 catch {
+    Write-UpdateLog ("update failed: {0}" -f $_.Exception.Message)
     if ($renamed) {
+        Write-UpdateLog 'restoring previous application'
         Restore-PreviousApplication
     }
     exit 1

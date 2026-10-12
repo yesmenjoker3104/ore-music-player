@@ -960,6 +960,9 @@ class MainWindow(QMainWindow):
 
 		self.position_label = QLabel("0:00")
 		self.duration_label = QLabel("--:--")
+		for time_badge in (self.position_label, self.duration_label):
+			time_badge.setObjectName("valueBadge")
+			_style_value_badge(time_badge, 1.0)
 		self.position_slider = PositionSlider()
 		self._configure_slider(self.position_slider, accent=True)
 		self.position_slider.setRange(0, 0)
@@ -988,10 +991,11 @@ class MainWindow(QMainWindow):
 		pos_inner = QHBoxLayout(pos_box)
 		pos_inner.setContentsMargins(8, 4, 8, 4)
 		pos_inner.setSpacing(8)
-		pos_inner.addWidget(self.position_label)
 		pos_inner.addWidget(seek_back_button)
 		pos_inner.addWidget(self.position_slider, 1)
 		pos_inner.addWidget(seek_forward_button)
+		pos_inner.addWidget(self.position_label)
+		pos_inner.addWidget(QLabel("/"))
 		pos_inner.addWidget(self.duration_label)
 
 		self.speed_slider = QSlider()
