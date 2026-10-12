@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -45,10 +44,6 @@ def run() -> int:
 		return 0
 	qt_application.setWindowIcon(QIcon(str(_application_icon_path())))
 	with build_application() as components:
-		os.environ.setdefault(
-			"ORE_MUSIC_TRACE",
-			str(components.data_directory / "playback-trace.jsonl"),
-		)
 		window = MainWindow(
 			components.playback_service,
 			components.playlist_service,
