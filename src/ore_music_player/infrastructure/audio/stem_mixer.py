@@ -2,12 +2,38 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 
 SAMPLE_RATE = 44100
 CHANNELS = 2
 BLOCK_SIZE = 1024
+
+
+class StemSource(Protocol):
+    """ミキサーが読み出すステム音源。read() は [start, end) のサンプルを返す。"""
+
+    names: list[str]
+    length: int
+
+    def read(self, start: int, end: int) -> dict[str, np.ndarray]: ...
+
+
+class DirectStems:
+    """メモリ上のステム配列をそのまま読み出す音源。"""
+
+    def __init__(self, stems: dict[str, np.ndarray]) -> None:
+        self._stems = stems
+        self.names = list(stems)
+        self.length = max((len(v) for v in stems.values()), default=0)
+
+    def read(self, start: int, end: int) -> dict[str, np.ndarray]:
+        return {name: audio[start:end] for name, audio in self._stems.items()}
+
+
+def _as_source(stems: dict[str, np.ndarray] | StemSource) -> StemSource:
+    return DirectStems(stems) if isinstance(stems, dict) else stems
 
 
 class StemMixer:
@@ -17,24 +43,30 @@ class StemMixer:
     stems の差し替え（速度変更）と mix_chunk の競合を避けるため _lock で保護する。
     """
 
-    def __init__(self, stems: dict[str, np.ndarray], sample_rate: int = SAMPLE_RATE) -> None:
-        self.stems = stems
+    def __init__(
+        self, stems: dict[str, np.ndarray] | StemSource, sample_rate: int = SAMPLE_RATE
+    ) -> None:
+        self.source = _as_source(stems)
         self.sample_rate = sample_rate
-        self.volumes: dict[str, float] = {name: 1.0 for name in stems}
+        self.volumes: dict[str, float] = {name: 1.0 for name in self.source.names}
         self._master_volume: float = 1.0
         self.position: int = 0
-        self.length: int = max(len(v) for v in stems.values()) if stems else 0
+        self.length: int = self.source.length
         self.a_point: int | None = None
         self.b_point: int | None = None
         self.loop_enabled: bool = False
         self._finished: bool = False
         self._lock = threading.Lock()
 
-    def replace_stems(self, stems: dict[str, np.ndarray], seconds: float) -> None:
+    @property
+    def stem_names(self) -> list[str]:
+        return list(self.source.names)
+
+    def replace_stems(self, stems: dict[str, np.ndarray] | StemSource, seconds: float) -> None:
         """同じ音量設定のまま、ステムを差し替えて指定位置から再生を続ける。"""
         with self._lock:
-            self.stems = stems
-            self.length = max(len(v) for v in stems.values()) if stems else 0
+            self.source = _as_source(stems)
+            self.length = self.source.length
             self.position = max(0, min(int(seconds * self.sample_rate), self.length))
             self._finished = self.position >= self.length
 
@@ -86,10 +118,11 @@ class StemMixer:
         actual = end - start
 
         result = np.zeros((frames, CHANNELS), dtype=np.float32)
-        for name, audio in self.stems.items():
-            vol = self.volumes.get(name, 1.0) * self._master_volume
-            if vol > 0 and actual > 0:
-                chunk = audio[start:end]
+        if actual > 0:
+            for name, chunk in self.source.read(start, end).items():
+                vol = self.volumes.get(name, 1.0) * self._master_volume
+                if vol <= 0:
+                    continue
                 if chunk.ndim == 1:
                     chunk = np.column_stack([chunk, chunk])
                 result[:actual] += (chunk * vol).astype(np.float32)
