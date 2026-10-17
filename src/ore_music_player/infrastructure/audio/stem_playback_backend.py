@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 
 import numpy as np
 import soundfile as sf
@@ -15,7 +16,12 @@ from ore_music_player.infrastructure.audio.stem_mixer import (
     CHANNELS,
     SAMPLE_RATE,
     StemMixer,
+    StemSource,
     load_stems,
+)
+from ore_music_player.infrastructure.audio.stretched_stems import (
+    StretchedStems,
+    next_chunk_to_compute,
 )
 from ore_music_player.infrastructure.separation.stem_repository import StemRepository
 
@@ -36,7 +42,8 @@ def _time_stretch(audio: np.ndarray, rate: float) -> np.ndarray:
     try:
         sf.write(infile, audio, SAMPLE_RATE)
         subprocess.run(
-            ["rubberband", "-q", "--tempo", str(rate), infile, outfile],
+            # ステム間で並列化するため、プロセス内スレッドは使わせない（競合して遅くなる）
+            ["rubberband", "-q", "--no-threads", "--tempo", str(rate), infile, outfile],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -49,14 +56,6 @@ def _time_stretch(audio: np.ndarray, rate: float) -> np.ndarray:
     if audio.ndim == 1:
         stretched = np.squeeze(stretched)
     return stretched
-
-
-def _stretch_stems(stems: dict[str, np.ndarray], speed: float) -> dict[str, np.ndarray]:
-    """ピッチを保ったまま時間伸縮する。speed > 1 で短くなる。"""
-    return {
-        name: _time_stretch(audio, speed).astype(np.float32)
-        for name, audio in stems.items()
-    }
 
 
 class StemPlaybackBackend:
@@ -211,7 +210,11 @@ class StemPlaybackBackend:
             self._mixer.set_b(self._loop_end / speed)
         self._mixer.loop_enabled = self._loop_enabled
 
-    def _install_stems_locked(self, stems: dict[str, np.ndarray], speed: float) -> None:
+    def _install_stems_locked(
+        self,
+        stems: dict[str, np.ndarray] | StemSource,
+        speed: float,
+    ) -> None:
         """現在位置（元の時間軸）を保ったまま、伸縮済みステムに切り替える。"""
         assert self._mixer is not None
         position_original = self._mixer.position_seconds * self._applied_speed
@@ -244,19 +247,42 @@ class StemPlaybackBackend:
         speed: float,
         originals: dict[str, np.ndarray],
     ) -> None:
+        """再生位置の前後から順に区間を伸縮し、先頭区間ができた時点で切り替える。
+
+        全体の伸縮完了を待たないため、速度変更後の反映が区間1つ分の時間で済む。
+        """
+        stretched = StretchedStems(originals, speed, _time_stretch)
+
+        def is_current_locked() -> bool:
+            return generation == self._stretch_generation and originals is self._original_stems
+
+        def is_current() -> bool:
+            with self._lock:
+                return is_current_locked()
+
+        installed = False
         try:
-            stretched = _stretch_stems(originals, speed)
+            while True:
+                with self._lock:
+                    if not is_current_locked() or self._mixer is None:
+                        return
+                    playhead_chunk = stretched.chunk_of_original(
+                        self._mixer.position_seconds * self._applied_speed
+                    )
+                    if not installed and stretched.has_chunk(playhead_chunk):
+                        self._install_stems_locked(stretched, speed)
+                        installed = True
+                index = next_chunk_to_compute(stretched, playhead_chunk)
+                if index is None:
+                    if stretched.is_complete():
+                        return
+                    time.sleep(0.2)
+                    continue
+                if not stretched.compute_chunk(index, lambda: not is_current()):
+                    return
         except Exception:
             logger.exception("ステムの時間伸縮に失敗しました (speed=%s)", speed)
-            return
-        with self._lock:
-            if (
-                generation != self._stretch_generation
-                or originals is not self._original_stems
-                or self._mixer is None
-            ):
-                return
-            self._install_stems_locked(stretched, speed)
+
 
     # ------------------------------------------------------------------
     # ステム音量制御（UI から呼ばれる）
@@ -277,7 +303,7 @@ class StemPlaybackBackend:
     def stem_names(self) -> list[str]:
         if self._mixer is None:
             return []
-        return list(self._mixer.stems.keys())
+        return list(self._mixer.stem_names)
 
     def close(self) -> None:
         self.stop()

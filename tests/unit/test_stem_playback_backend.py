@@ -8,6 +8,7 @@ import pytest
 
 from ore_music_player.domain.models import Track
 from ore_music_player.infrastructure.audio import stem_playback_backend as backend_module
+from ore_music_player.infrastructure.audio import stretched_stems as stretched_module
 from ore_music_player.infrastructure.audio.stem_playback_backend import (
     StemPlaybackBackend,
 )
@@ -30,19 +31,16 @@ def _fake_stems(paths: dict[str, Path]) -> dict[str, np.ndarray]:
     return {name: np.zeros((n, 2), dtype=np.float32) for name in paths}
 
 
-def _fake_stretch(stems: dict[str, np.ndarray], speed: float) -> dict[str, np.ndarray]:
-    stretched = {}
-    for name, audio in stems.items():
-        out_len = int(len(audio) / speed)
-        idx = np.linspace(0, len(audio) - 1, out_len).astype(int)
-        stretched[name] = audio[idx]
-    return stretched
+def _fake_time_stretch(audio: np.ndarray, rate: float) -> np.ndarray:
+    out_len = round(len(audio) / rate)
+    idx = np.linspace(0, len(audio) - 1, out_len).astype(int)
+    return audio[idx]
 
 
 @pytest.fixture
 def backend(monkeypatch: pytest.MonkeyPatch) -> StemPlaybackBackend:
     monkeypatch.setattr(backend_module, "load_stems", _fake_stems)
-    monkeypatch.setattr(backend_module, "_stretch_stems", _fake_stretch)
+    monkeypatch.setattr(backend_module, "_time_stretch", _fake_time_stretch)
     return StemPlaybackBackend(FakeRepo())
 
 
@@ -146,3 +144,21 @@ def test_speed_is_applied_after_load_when_already_set(backend: StemPlaybackBacke
     _wait_for_speed(backend, 1.25)
 
     assert backend.duration_seconds == pytest.approx(TRACK_SECONDS, abs=1e-3)
+
+
+def test_speed_applies_before_all_chunks_are_stretched(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(backend_module, "load_stems", _fake_stems)
+    monkeypatch.setattr(backend_module, "_time_stretch", _fake_time_stretch)
+    monkeypatch.setattr(stretched_module, "CHUNK_SECONDS", 2.0)
+    backend = StemPlaybackBackend(FakeRepo())
+    backend.load(_track())
+    backend.seek(1.0)
+
+    backend.set_speed(2.0)
+    _wait_for_speed(backend, 2.0)
+
+    assert backend.position_seconds == pytest.approx(1.0, abs=1e-3)
+    assert backend._mixer is not None
+    assert backend._mixer.position_seconds == pytest.approx(0.5, abs=1e-3)
