@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 from conftest import FakePlaylistRepository
-from PySide6.QtCore import QItemSelectionModel, QSettings, Qt
+from PySide6.QtCore import QItemSelectionModel, QSettings, QSize, Qt
 from PySide6.QtGui import QIcon, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -27,6 +27,8 @@ from ore_music_player.application.ports import PlaybackBackendError
 from ore_music_player.domain.models import Track
 from ore_music_player.ui.icon_button import IconButton
 from ore_music_player.ui.main_window import (
+    MIN_WINDOW_HEIGHT,
+    MIN_WINDOW_WIDTH,
     PRACTICE_STEP_BUTTON_SIZE,
     SLIDER_GROOVE_HEIGHT,
     MainWindow,
@@ -819,8 +821,14 @@ def test_left_pane_settings_are_saved_and_restored(
         assert Path(restored_window.file_system_model.rootPath()) == tmp_path
         assert not restored_window.file_tree.rootIndex().isValid()
         assert restored_window.main_splitter.sizes()[0] == saved_left_width
-        assert abs(restored_window.right_splitter.sizes()[0] - saved_right_sizes[0]) <= 5
-        assert restored_window.height() == saved_window_size.height()
+        # The playback pane is pinned to its content height, so the saved
+        # height is not restored; the playlist takes the remaining space.
+        assert saved_right_sizes[0] > 0
+        assert (
+            restored_window.right_splitter.sizes()[0]
+            == restored_window.right_splitter.widget(0).sizeHint().height()
+        )
+        assert abs(restored_window.height() - saved_window_size.height()) <= 6
         assert restored_window.width() >= 700
         assert (
             restored_window.file_tree.columnWidth(0),
@@ -916,7 +924,7 @@ def test_practice_mode_shows_only_playback_controls_on_top(
         assert bool(window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
         assert window.file_panel.isHidden()
         assert window.playlist_view.isHidden()
-        assert window.track_label.isHidden()
+        assert not window.track_label.isHidden()
         assert window.left_pane_button.isHidden()
         assert window.menuBar().isHidden()
         assert not window.practice_mode_button.isHidden()
@@ -925,9 +933,9 @@ def test_practice_mode_shows_only_playback_controls_on_top(
         assert not window.volume_slider.isHidden()
         assert window.practice_mode_button.art() == "practice_mode_on"
         assert window.width() < normal_width
-        assert window.previous_button.width() == normal_button_width // 2
-        assert window.speed_slider.width() == normal_slider_width // 2
-        assert window.volume_slider.width() == normal_slider_width // 2
+        assert 0 < window.previous_button.width() < normal_button_width
+        assert 0 < window.speed_slider.width() < window.width()
+        assert abs(window.speed_slider.width() - window.volume_slider.width()) <= 2
         assert window.size() == window.minimumSizeHint()
 
         window.practice_mode_button.click()
@@ -940,14 +948,29 @@ def test_practice_mode_shows_only_playback_controls_on_top(
         assert not window.menuBar().isHidden()
         assert window.practice_mode_button.art() == "practice_mode"
         assert window.width() == normal_width
-        assert window.previous_button.width() == normal_button_width
-        assert window.speed_slider.width() == normal_slider_width
+        assert abs(window.previous_button.width() - normal_button_width) <= 6
+        assert abs(window.speed_slider.width() - normal_slider_width) <= 6
         assert window.right_splitter.sizes() == pytest.approx(
             normal_right_sizes,
             abs=2,
         )
     finally:
         window._settings.clear()
+        window.close()
+
+
+def test_playback_controls_scale_with_normal_window_size(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    try:
+        window.show()
+        window.resize(1000, 700)
+        qt_application.processEvents()
+
+        assert window.previous_button.width() < 96
+        assert window.speed_slider.width() == window.volume_slider.width()
+    finally:
         window.close()
 
 
@@ -1562,7 +1585,8 @@ def test_transport_and_ab_buttons_share_one_row(
         window.loop_button,
         window.playback_mode_button,
     )
-    assert all(button.height() == 96 for button in control_buttons)
+    assert len({button.width() for button in control_buttons}) == 1
+    assert all(0 < button.height() <= 96 for button in control_buttons)
     assert len({button.geometry().top() for button in control_buttons}) == 1
     window.close()
 
@@ -1587,24 +1611,16 @@ def test_transport_buttons_spread_across_pane_width(
         window.practice_mode_button,
     )
     player = window.playback_mode_button.parentWidget()
-    gaps_by_width = {}
+    widths_by_window = {}
     for width in (1400, 1800):
         window.resize(width, window.height())
         qt_application.processEvents()
-        content = player.layout().contentsRect()
+        content = player.rect()
         assert control_buttons[0].geometry().left() == content.left()
         assert control_buttons[-1].geometry().right() == content.right()
-        gaps = {
-            right_button.geometry().left() - left_button.geometry().right() - 1
-            for left_button, right_button in zip(
-                control_buttons,
-                control_buttons[1:],
-                strict=False,
-            )
-        }
-        assert max(gaps) - min(gaps) <= 1
-        gaps_by_width[width] = min(gaps)
-    assert gaps_by_width[1800] > gaps_by_width[1400]
+        assert len({button.width() for button in control_buttons}) == 1
+        widths_by_window[width] = control_buttons[1].width()
+    assert widths_by_window[1800] > widths_by_window[1400]
     window.close()
 
 
@@ -1990,6 +2006,60 @@ def test_step_buttons_scale_in_practice_mode(
     window.close()
 
 
+def test_practice_mode_controls_scale_with_window_size(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    window.show()
+    qt_application.processEvents()
+    window.set_practice_mode(True)
+    qt_application.processEvents()
+    entry_size = window.size()
+    entry_button_width = window.previous_button.width()
+    assert window.minimumSize().width() == entry_size.width()
+
+    window.resize(entry_size.width() * 2, entry_size.height())
+    qt_application.processEvents()
+    assert window.previous_button.width() > entry_button_width
+
+    window.resize(entry_size.width(), entry_size.height() + 200)
+    qt_application.processEvents()
+    assert window.height() == window.minimumSizeHint().height()
+    assert window.minimumHeight() == window.maximumHeight()
+
+    window.set_practice_mode(False)
+    qt_application.processEvents()
+    assert window.minimumSize() == QSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+    assert window.maximumHeight() > window.height()
+
+    window.close()
+
+
+def test_normal_window_has_minimum_size_floor(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    window.show()
+    qt_application.processEvents()
+    assert window.minimumSize() == QSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+
+    window.resize(MIN_WINDOW_WIDTH // 2, MIN_WINDOW_HEIGHT // 2)
+    qt_application.processEvents()
+    assert window.size() == QSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+
+    window.set_practice_mode(True)
+    qt_application.processEvents()
+    assert window.minimumSize().width() < MIN_WINDOW_WIDTH
+
+    window.set_practice_mode(False)
+    qt_application.processEvents()
+    assert window.minimumSize() == QSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+    assert window.width() >= MIN_WINDOW_WIDTH
+    assert window.height() >= MIN_WINDOW_HEIGHT
+
+    window.close()
+
+
 def test_volume_slider_is_small_and_updates_backend(
     qt_application: QApplication,
 ) -> None:
@@ -1998,7 +2068,7 @@ def test_volume_slider_is_small_and_updates_backend(
     qt_application.processEvents()
 
     assert window.volume_slider.value() == 100
-    assert window.volume_slider.width() == 160
+    assert window.volume_slider.width() > 0
     assert window.volume_value_label.text() == "100"
     assert window.volume_slider.height() == window.speed_slider.height()
     assert window.volume_slider.minimumHeight() == window.speed_slider.minimumHeight()
@@ -2111,8 +2181,7 @@ def test_seek_and_speed_sliders_share_width_and_thickness(
     window.show()
     qt_application.processEvents()
 
-    assert window.speed_slider.width() == 160
-    assert window.speed_slider.width() >= 160
+    assert window.speed_slider.width() == window.volume_slider.width()
     assert window.right_splitter.sizes()[0] <= 350
     assert (
         window.position_slider.minimumHeight()
@@ -2122,6 +2191,66 @@ def test_seek_and_speed_sliders_share_width_and_thickness(
     assert "height: 18px" in window.speed_slider.styleSheet()
 
     window.close()
+
+
+def test_speed_and_volume_boxes_align_to_playback_position_both_edges(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    window.show()
+    qt_application.processEvents()
+
+    pos_geometry = window.position_slider.parentWidget().geometry()
+    assert window.speed_box.geometry().left() == pos_geometry.left()
+    assert window.volume_box.geometry().right() == pos_geometry.right()
+
+    window.close()
+
+
+def test_speed_and_volume_boxes_meet_at_center_with_equal_sliders(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    window.show()
+    qt_application.processEvents()
+
+    speed_geometry = window.speed_box.geometry()
+    volume_geometry = window.volume_box.geometry()
+    assert 0 <= volume_geometry.left() - speed_geometry.right() <= 10
+    assert abs(speed_geometry.width() - volume_geometry.width()) <= 2
+    assert abs(window.speed_slider.width() - window.volume_slider.width()) <= 2
+
+    window.close()
+
+
+def test_transport_buttons_fit_inside_pane_when_window_is_narrow(
+    qt_application: QApplication,
+) -> None:
+    window, _ = make_window(qt_application)
+    try:
+        window._settings.clear()
+        window.show()
+        window.resize(700, 700)
+        qt_application.processEvents()
+
+        pane = window.right_splitter.widget(0)
+        transport_buttons = [
+            button
+            for button in window.findChildren(IconButton)
+            if button.objectName() == "transportButton"
+        ]
+        assert transport_buttons
+        assert sum(button.width() for button in transport_buttons) <= (
+            pane.contentsRect().width()
+        )
+        for button in transport_buttons:
+            left = button.mapTo(pane, button.rect().topLeft()).x()
+            right = button.mapTo(pane, button.rect().topRight()).x()
+            assert left >= 0
+            assert right <= pane.width()
+    finally:
+        window._settings.clear()
+        window.close()
 
 
 def test_playlist_starts_immediately_below_speed_slider(

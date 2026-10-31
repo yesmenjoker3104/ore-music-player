@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 
 from ore_music_player.domain.models import Playlist, Track
@@ -18,7 +19,8 @@ class SQLitePlaylistRepository:
             """
             CREATE TABLE IF NOT EXISTS playlists (
                 playlist_id TEXT PRIMARY KEY,
-                name TEXT NOT NULL
+                name TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS tracks (
@@ -41,6 +43,14 @@ class SQLitePlaylistRepository:
             );
             """
         )
+        columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(playlists)")
+        }
+        if "position" not in columns:
+            self._connection.execute(
+                "ALTER TABLE playlists ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
+            )
         self._connection.commit()
 
     def get(self, playlist_id: str) -> Playlist | None:
@@ -103,7 +113,7 @@ class SQLitePlaylistRepository:
                 ON p.playlist_id = pt.playlist_id
             LEFT JOIN tracks AS t
                 ON pt.track_id = t.track_id
-            ORDER BY p.rowid, pt.position
+            ORDER BY p.position, p.rowid, pt.position
             """
         ).fetchall()
 
@@ -137,8 +147,12 @@ class SQLitePlaylistRepository:
         with self._connection:
             self._connection.execute(
                 """
-                INSERT INTO playlists (playlist_id, name)
-                VALUES (?, ?)
+                INSERT INTO playlists (playlist_id, name, position)
+                VALUES (
+                    ?,
+                    ?,
+                    COALESCE((SELECT MAX(position) + 1 FROM playlists), 0)
+                )
                 ON CONFLICT(playlist_id) 
                 DO UPDATE SET
                     name = excluded.name
@@ -199,6 +213,21 @@ class SQLitePlaylistRepository:
                 """,
                 (playlist_id,),
             )
+
+    def reorder_playlists(self, ordered_playlist_ids: Sequence[str]) -> None:
+        playlists = self.list_all()
+        playlist_ids = {playlist.playlist_id for playlist in playlists}
+        ordered_ids = tuple(ordered_playlist_ids)
+        if len(ordered_ids) != len(playlists) or set(ordered_ids) != playlist_ids:
+            raise ValueError(
+                "ordered_playlist_idsは現在のplaylist_idを過不足なく含める必要があります"
+            )
+        with self._connection:
+            for position, playlist_id in enumerate(ordered_ids):
+                self._connection.execute(
+                    "UPDATE playlists SET position = ? WHERE playlist_id = ?",
+                    (position, playlist_id),
+                )
 
     def close(self) -> None:
         self._connection.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 
 from ore_music_player.domain.models import Playlist, Track
@@ -52,6 +53,9 @@ class PlaylistRepository(Protocol):
         ...
 
     def list_all(self) -> tuple[Playlist, ...]:
+        ...
+
+    def reorder_playlists(self, ordered_playlist_ids: Sequence[str]) -> None:
         ...
 
     def save(self, playlist: Playlist) -> None:

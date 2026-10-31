@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import cache
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QRectF, Qt
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt
 from PySide6.QtGui import (
 	QColor,
 	QFocusEvent,
@@ -46,6 +46,7 @@ class IconButton(QPushButton):
 	def __init__(self, size: int, label: str, art: str) -> None:
 		super().__init__()
 		self._base_size = size
+		self._side = size
 		self._art = art
 		self._caption = ""
 		self._focus_ring_visible = False
@@ -57,7 +58,14 @@ class IconButton(QPushButton):
 
 	def set_scale(self, scale: float) -> None:
 		side = round(self._base_size * scale)
+		self._side = side
 		self.setFixedSize(side, side)
+
+	def sizeHint(self) -> QSize:
+		return QSize(self._side, self._side)
+
+	def minimumSizeHint(self) -> QSize:
+		return QSize(0, 0)
 
 	def label(self) -> str:
 		return self._label

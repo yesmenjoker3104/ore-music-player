@@ -15,6 +15,14 @@ class FakePlaylistRepository:
 	def list_all(self) -> tuple[Playlist, ...]:
 		return tuple(self.playlists.values())
 
+	def reorder_playlists(self, ordered_playlist_ids: tuple[str, ...]) -> None:
+		if set(ordered_playlist_ids) != set(self.playlists):
+			raise ValueError("invalid playlist order")
+		self.playlists = {
+			playlist_id: self.playlists[playlist_id]
+			for playlist_id in ordered_playlist_ids
+		}
+
 	def save(self, playlist: Playlist) -> None:
 		self.save_calls += 1
 		self.playlists[playlist.playlist_id] = playlist

@@ -87,6 +87,7 @@ from ore_music_player.infrastructure.update_service import (
 )
 from ore_music_player.ui.icon_button import IconButton
 from ore_music_player.ui.playlist_view import (
+	PlaylistActionBar,
 	PlaylistTrackSelection,
 	PlaylistView,
 )
@@ -98,8 +99,15 @@ PRACTICE_MODE_SCALE = 0.5
 PRACTICE_STEP_BUTTON_SIZE = 36
 STEM_VOLUME_BUTTON_SIZE = 72
 PRACTICE_STEM_VOLUME_BUTTON_SIZE = 56
+BASE_WINDOW_WIDTH = 1209
+BASE_WINDOW_HEIGHT = 770
+MIN_WINDOW_SCALE = 0.75
+MIN_WINDOW_WIDTH = round(BASE_WINDOW_WIDTH * MIN_WINDOW_SCALE)
+MIN_WINDOW_HEIGHT = round(BASE_WINDOW_HEIGHT * MIN_WINDOW_SCALE)
+MAX_WINDOW_SCALE = 1.25
+MIN_TRANSPORT_SCALE = 0.4
 TILE_GRID_SPACING = 4
-SPEED_SLIDER_WIDTH = 160
+SLIDER_MINIMUM_WIDTH = 60
 SUPPORTED_AUDIO_SUFFIXES = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
 SUPPORTED_AUDIO_NAME_FILTERS = [f"*{suffix}" for suffix in SUPPORTED_AUDIO_SUFFIXES]
 SEEK_SCALE = 1000
@@ -115,15 +123,17 @@ VOLUME_STEP = 5
 def _value_badge_style(scale: float) -> str:
 	radius = round(8 * scale)
 	font_size = round(16 * scale)
+	border_width = max(1, round(2 * scale))
+	horizontal_padding = round(6 * scale)
 	return f"""
 	QLabel#valueBadge {{
 		color: #ffb020;
 		background: #201a14;
-		border: 2px solid #c86a1e;
+		border: {border_width}px solid #c86a1e;
 		border-radius: {radius}px;
 		font-size: {font_size}px;
 		font-weight: bold;
-		padding: 2px 6px;
+		padding: {round(2 * scale)}px {horizontal_padding}px;
 	}}
 	"""
 
@@ -690,6 +700,9 @@ class MainWindow(QMainWindow):
 		)
 		self._practice_mode = False
 		self._practice_saved_layout: dict | None = None
+		# Window size at which practice mode is at scale 1.0.
+		self._practice_base_size: QSize | None = None
+		self._applied_control_scale: tuple[float, float] | None = None
 		splitter_layout_version = self._settings.value(
 			self._SPLITTER_LAYOUT_VERSION_KEY,
 			0,
@@ -721,7 +734,7 @@ class MainWindow(QMainWindow):
 		self.setWindowTitle("Ore Music Player")
 		icon_path = Path(__file__).resolve().parents[1] / "assets" / "app_icon.ico"
 		self.setWindowIcon(QIcon(str(icon_path)))
-		self.resize(1209, 770)
+		self.resize(BASE_WINDOW_WIDTH, BASE_WINDOW_HEIGHT)
 		self._create_file_menu()
 
 		central_widget = QWidget()
@@ -730,6 +743,7 @@ class MainWindow(QMainWindow):
 		splitter = QSplitter(Qt.Orientation.Horizontal)
 		self.main_splitter = splitter
 		splitter.splitterMoved.connect(self._schedule_left_pane_settings_save)
+		splitter.splitterMoved.connect(self._refresh_control_scale)
 		layout.addWidget(splitter)
 
 		file_panel = QWidget()
@@ -808,6 +822,7 @@ class MainWindow(QMainWindow):
 		self.file_tree.selectionModel().currentChanged.connect(
 			self._update_file_tree_path
 		)
+		self.file_tree.expanded.connect(self._update_expanded_file_tree_visibility)
 		self._source_file_system_model.directoryLoaded.connect(
 			self._update_file_tree_visibility
 		)
@@ -830,13 +845,20 @@ class MainWindow(QMainWindow):
 
 		right_splitter = QSplitter(Qt.Orientation.Vertical)
 		self.right_splitter = right_splitter
+		right_splitter.setMinimumHeight(0)
 		right_splitter.splitterMoved.connect(self._schedule_left_pane_settings_save)
+		right_splitter.splitterMoved.connect(self._refresh_control_scale)
 		splitter.addWidget(right_splitter)
 		splitter.setStretchFactor(0, 1)
 		splitter.setStretchFactor(1, 2)
 		splitter.setSizes([345, 615])
 
 		player_widget = QWidget()
+		player_widget.setSizePolicy(
+			QSizePolicy.Policy.Ignored,
+			QSizePolicy.Policy.Expanding,
+		)
+		player_widget.setMinimumHeight(0)
 		player_layout = QVBoxLayout(player_widget)
 		player_layout.setContentsMargins(0, 0, 0, 0)
 		player_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -956,7 +978,21 @@ class MainWindow(QMainWindow):
 		self._update_practice_mode_button()
 		button_row.addStretch(1)
 		button_row.addWidget(self.practice_mode_button)
+		for button in (
+			self.left_pane_button,
+			self.previous_button,
+			self.play_pause_button,
+			self.stop_button,
+			self.next_button,
+			self.set_a_button,
+			self.set_b_button,
+			self.loop_button,
+			self.playback_mode_button,
+			self.practice_mode_button,
+		):
+			button.setObjectName("transportButton")
 		player_layout.addLayout(button_row)
+		self._transport_button_row = button_row
 
 		self.position_label = QLabel("0:00")
 		self.duration_label = QLabel("--:--")
@@ -990,7 +1026,7 @@ class MainWindow(QMainWindow):
 		pos_box = QGroupBox("再生位置")
 		pos_inner = QHBoxLayout(pos_box)
 		pos_inner.setContentsMargins(8, 4, 8, 4)
-		pos_inner.setSpacing(8)
+		pos_inner.setSpacing(0)
 		pos_inner.addWidget(seek_back_button)
 		pos_inner.addWidget(self.position_slider, 1)
 		pos_inner.addWidget(seek_forward_button)
@@ -1000,7 +1036,11 @@ class MainWindow(QMainWindow):
 
 		self.speed_slider = QSlider()
 		self._configure_slider(self.speed_slider, accent=True)
-		self.speed_slider.setFixedWidth(SPEED_SLIDER_WIDTH)
+		self.speed_slider.setSizePolicy(
+			QSizePolicy.Policy.Expanding,
+			QSizePolicy.Policy.Fixed,
+		)
+		self.speed_slider.setMinimumWidth(SLIDER_MINIMUM_WIDTH)
 		speed_steps = int(
 			(MAX_PLAYBACK_SPEED - MIN_PLAYBACK_SPEED)
 			/ PLAYBACK_SPEED_STEP
@@ -1038,9 +1078,10 @@ class MainWindow(QMainWindow):
 		)
 
 		speed_box = QGroupBox("再生速度")
+		self.speed_box = speed_box
 		speed_inner = QHBoxLayout(speed_box)
 		speed_inner.setContentsMargins(8, 4, 8, 4)
-		speed_inner.setSpacing(8)
+		speed_inner.setSpacing(0)
 		speed_inner.addWidget(speed_down_button)
 		speed_inner.addWidget(self.speed_slider)
 		speed_inner.addWidget(speed_up_button)
@@ -1055,7 +1096,11 @@ class MainWindow(QMainWindow):
 		self.volume_slider.setRange(0, 100)
 		saved_volume = self._settings.value(self._VOLUME_KEY, 100, type=int)
 		self.volume_slider.setValue(max(0, min(100, saved_volume)))
-		self.volume_slider.setFixedWidth(SPEED_SLIDER_WIDTH)
+		self.volume_slider.setSizePolicy(
+			QSizePolicy.Policy.Expanding,
+			QSizePolicy.Policy.Fixed,
+		)
+		self.volume_slider.setMinimumWidth(SLIDER_MINIMUM_WIDTH)
 		self.volume_slider.setToolTip("音量")
 		self._muted = False
 		self.volume_slider.valueChanged.connect(self.change_volume)
@@ -1091,9 +1136,10 @@ class MainWindow(QMainWindow):
 			step_button.setObjectName("stepButton")
 
 		volume_box = QGroupBox("音量")
+		self.volume_box = volume_box
 		volume_inner = QHBoxLayout(volume_box)
 		volume_inner.setContentsMargins(8, 4, 8, 4)
-		volume_inner.setSpacing(8)
+		volume_inner.setSpacing(0)
 		volume_inner.addWidget(self.volume_mute_button)
 		volume_inner.addWidget(volume_down_button)
 		volume_inner.addWidget(self.volume_slider)
@@ -1107,14 +1153,14 @@ class MainWindow(QMainWindow):
 			STEM_VOLUME_BUTTON_SIZE,
 		)
 		self._stem_volume_button.setVisible(False)
+		volume_inner.addWidget(self._stem_volume_button)
+		self._lower_row_layouts = (pos_inner, speed_inner, volume_inner)
 
 		controls_row = QHBoxLayout()
 		controls_row.setContentsMargins(0, 0, 0, 0)
 		controls_row.setSpacing(8)
-		controls_row.addWidget(speed_box)
-		controls_row.addWidget(volume_box)
-		controls_row.addWidget(self._stem_volume_button)
-		controls_row.addStretch(1)
+		controls_row.addWidget(speed_box, 1)
+		controls_row.addWidget(volume_box, 1)
 
 		player_layout.addWidget(pos_box)
 		player_layout.addLayout(controls_row)
@@ -1144,11 +1190,13 @@ class MainWindow(QMainWindow):
 		self._restore_right_splitter_state()
 
 		self.setCentralWidget(central_widget)
+		self.setMinimumSize(QSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT))
 		self._restore_window_geometry()
 		self._create_shortcuts()
 		self._restore_splitter_state()
 		self._refresh_pane_visibility()
 		self._restore_playback_session()
+		self._apply_practice_scale(False)
 
 	def showEvent(self, event) -> None:
 		super().showEvent(event)
@@ -1156,6 +1204,8 @@ class MainWindow(QMainWindow):
 			self._layout_restored_after_show = True
 			self._restore_splitter_state()
 			self._restore_right_splitter_state()
+			QTimer.singleShot(0, self._restore_right_splitter_state)
+			QTimer.singleShot(0, self._refresh_control_scale)
 			self._refresh_pane_visibility()
 		if self._splitter_migration_pending:
 			self._splitter_migration_pending = False
@@ -1267,10 +1317,11 @@ class MainWindow(QMainWindow):
 				"geometry": self.normalGeometry(),
 				"maximized": self.isMaximized(),
 				"right_sizes": self.right_splitter.sizes(),
+				"main_sizes": self.main_splitter.sizes(),
 			}
 		self._practice_mode = enabled
 		self.menuBar().setVisible(not enabled)
-		self.track_label.setVisible(not enabled)
+		self.track_label.setVisible(True)
 		self.left_pane_button.setVisible(not enabled)
 		self.playlist_view.setVisible(not enabled)
 		self._refresh_pane_visibility()
@@ -1283,6 +1334,9 @@ class MainWindow(QMainWindow):
 			return
 		saved = self._practice_saved_layout
 		self._practice_saved_layout = None
+		self._practice_base_size = None
+		self._lock_window_height(False)
+		self.setMinimumSize(QSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT))
 		if saved is None:
 			self.showNormal()
 			return
@@ -1292,36 +1346,202 @@ class MainWindow(QMainWindow):
 		else:
 			self.setGeometry(saved["geometry"])
 			self.showNormal()
+		if self._left_pane_visible and saved["main_sizes"][0] > 0:
+			# Restoring the geometry rescales the splitter, so reapply the
+			# left pane width afterwards.
+			self.main_splitter.setSizes(saved["main_sizes"])
+		QTimer.singleShot(0, self._refresh_control_scale)
+
+	def resizeEvent(self, event) -> None:
+		super().resizeEvent(event)
+		self._refresh_control_scale()
+
+	def _refresh_control_scale(self, *_splitter_args) -> None:
+		if not hasattr(self, "position_slider"):
+			return
+		self.layout().activate()
+		self.right_splitter.widget(0).layout().activate()
+		self._apply_practice_scale(self._practice_mode)
+		self.layout().activate()
+		playback_widget = self.right_splitter.widget(0)
+		playback_layout = playback_widget.layout()
+		playback_layout.activate()
+		playback_layout.setGeometry(playback_widget.rect())
+		self._pin_playback_height()
+		# Scaled button sizes settle one event-loop pass later, so pin again then.
+		QTimer.singleShot(0, self._pin_playback_height)
+
+	def _pin_playback_height(self) -> None:
+		# The playlist takes the space left below the playback controls, so the
+		# controls keep their content height and no gap opens above the playlist.
+		playback_widget = self.right_splitter.widget(0)
+		# The cached layout hint can be stale after scaled buttons or stylesheets
+		# change, so recompute it from a fresh layout pass.
+		playback_widget.ensurePolished()
+		playback_layout = playback_widget.layout()
+		playback_layout.invalidate()
+		playback_layout.activate()
+		height = playback_widget.sizeHint().height()
+		playback_widget.setMinimumHeight(height)
+		playback_widget.setMaximumHeight(height)
+		# The splitter only re-lays out after this pass, so set the sizes
+		# explicitly to avoid a stale gap.
+		playlist_height = max(
+			self.right_splitter.height() - self.right_splitter.handleWidth() - height,
+			0,
+		)
+		self.right_splitter.setSizes([height, playlist_height])
 
 	def _fit_window_to_minimum_size(self) -> None:
-		# Layout updates from the mode switch are still queued, so flush them
 		# before reading the minimum; otherwise resize() is clamped to the
 		# normal-layout size.
+		self._lock_window_height(False)
 		self.setMinimumSize(QSize(0, 0))
 		QCoreApplication.sendPostedEvents()
 		self.layout().activate()
+		pane = self.right_splitter.widget(0)
+		pane.layout().activate()
+		pane.setMinimumWidth(pane.layout().totalMinimumSize().width())
+		# The splitters cache child minimums, so propagate the change up to the
+		# window before reading its minimum size.
+		self.right_splitter.updateGeometry()
+		self.main_splitter.updateGeometry()
+		self.centralWidget().updateGeometry()
+		QCoreApplication.processEvents()
+		self.layout().activate()
 		minimum = self.minimumSizeHint()
-		self.setMinimumSize(minimum)
+		self._practice_base_size = minimum
 		self.resize(minimum)
+		self._applied_control_scale = None
+		self._apply_practice_scale(True)
+
+	def _lock_window_height(self, locked: bool) -> None:
+		# Practice mode follows the window width, so the height is pinned to the
+		# content height. Otherwise extra height would only show empty space.
+		if not locked:
+			self.setMinimumHeight(0)
+			# 16777215 is Qt's QWIDGETSIZE_MAX, which PySide6 does not expose.
+			self.setMaximumHeight(16777215)
+			return
+		self._pin_window_height()
+		# Scaled minimums settle one event-loop pass later, so pin again then.
+		QTimer.singleShot(0, self._pin_window_height)
+
+	def _pin_window_height(self) -> None:
+		if not self._practice_mode:
+			return
+		self.layout().activate()
+		height = self.minimumSizeHint().height()
+		self.setMinimumHeight(height)
+		self.setMaximumHeight(height)
+
+	def _current_window_scale(self, enabled: bool) -> float:
+		if enabled:
+			base = self._practice_base_size
+			if base is None or base.width() <= 0:
+				return 1.0
+			# Width alone sets the practice scale and there is no upper cap,
+			# so the content grows with the window instead of leaving gaps.
+			return max(MIN_WINDOW_SCALE, self.width() / base.width())
+		window_scale = min(
+			self.width() / BASE_WINDOW_WIDTH,
+			self.height() / BASE_WINDOW_HEIGHT,
+		)
+		return max(MIN_WINDOW_SCALE, min(MAX_WINDOW_SCALE, window_scale))
 
 	def _apply_practice_scale(self, enabled: bool) -> None:
-		scale = PRACTICE_MODE_SCALE if enabled else 1.0
-		step_scale = PRACTICE_STEP_BUTTON_SIZE / STEP_BUTTON_SIZE if enabled else 1.0
-		stem_scale = PRACTICE_STEM_VOLUME_BUTTON_SIZE / STEM_VOLUME_BUTTON_SIZE if enabled else 1.0
+		window_scale = self._current_window_scale(enabled)
+		mode_scale = PRACTICE_MODE_SCALE if enabled else 1.0
+		scale = window_scale * mode_scale
+		transport_scale = window_scale
+		pane = self.right_splitter.widget(0) if hasattr(self, "right_splitter") else None
+		if pane is not None and not enabled:
+			pane_width = pane.contentsRect().width()
+			if pane_width > 0:
+				transport_scale = min(MAX_WINDOW_SCALE, pane_width / (96 * 10))
+		transport_scale = max(MIN_TRANSPORT_SCALE, transport_scale)
+		if self._applied_control_scale == (scale, transport_scale):
+			return
+		step_scale = (
+			PRACTICE_STEP_BUTTON_SIZE / STEP_BUTTON_SIZE * window_scale
+			if enabled
+			else transport_scale
+		)
+		stem_scale = (
+			PRACTICE_STEM_VOLUME_BUTTON_SIZE / STEM_VOLUME_BUTTON_SIZE * window_scale
+			if enabled
+			else transport_scale
+		)
 		for button in self.findChildren(IconButton):
-			if button.objectName() == "stepButton":
+			if isinstance(button.parentWidget(), PlaylistActionBar):
+				# The playlist action bar sizes its own buttons to its width.
+				continue
+			is_transport = button.objectName() == "transportButton"
+			is_step = button.objectName() == "stepButton"
+			is_stem = button is self._stem_volume_button
+			if is_transport:
+				button.set_scale(transport_scale * mode_scale)
+			elif is_step:
 				button.set_scale(step_scale)
-			elif button is self._stem_volume_button:
+			elif is_stem:
 				button.set_scale(stem_scale)
 			else:
 				button.set_scale(scale)
+			if is_transport or is_step or is_stem:
+				button.setSizePolicy(
+					QSizePolicy.Policy.Preferred,
+					QSizePolicy.Policy.Fixed,
+				)
+				if enabled:
+					# Practice mode fits the window to its content, so the
+					# buttons must contribute their size to the minimum.
+					side = button.sizeHint().width()
+					button.setMinimumSize(side, side)
+				else:
+					# A fixed minimum would lock the row to its current width,
+					# so the window could never be narrowed.
+					button.setMinimumSize(0, 0)
 		self._configure_slider(self.position_slider, scale, accent=True)
+		# Button artwork has a 4/128 transparent inset on each side, so the
+		# visible gap is spacing + side/16. Matching the transport row's visible
+		# gap means spacing = (transport side - lower side) / 16.
+		top_side = self.previous_button.sizeHint().width()
+		lower_side = self.volume_mute_button.sizeHint().width()
+		lower_spacing = max(0, round((top_side - lower_side) / 16))
+		for layout in self._lower_row_layouts:
+			layout.setSpacing(lower_spacing)
 		self._configure_slider(self.speed_slider, scale, accent=True)
 		self._configure_slider(self.volume_slider, scale, accent=True)
-		self.speed_slider.setFixedWidth(round(SPEED_SLIDER_WIDTH * scale))
-		self.volume_slider.setFixedWidth(round(SPEED_SLIDER_WIDTH * scale))
+		self.speed_slider.setMinimumWidth(round(SLIDER_MINIMUM_WIDTH * scale))
+		self.volume_slider.setMinimumWidth(round(SLIDER_MINIMUM_WIDTH * scale))
 		for badge in self.findChildren(QLabel, "valueBadge"):
 			_style_value_badge(badge, scale)
+		for badge in (self.speed_current_label, self.volume_value_label):
+			badge.setFixedWidth(round(VALUE_BADGE_WIDTH * scale))
+		# Style sheets take effect on polish; without this the minimum width
+		# below would be measured with the previous scale's sizes.
+		for widget in (
+			self.speed_slider,
+			self.volume_slider,
+			*self.findChildren(QLabel, "valueBadge"),
+		):
+			widget.ensurePolished()
+		if pane is not None:
+			# The player is Ignored horizontally so normal mode can shrink.
+			# Practice mode needs an explicit minimum to keep the window from
+			# going below its entry width.
+			pane.setMinimumWidth(self._practice_min_width() if enabled else 0)
+		if enabled:
+			self.setMinimumWidth(self._practice_min_width())
+			self._lock_window_height(True)
+		self._applied_control_scale = (scale, transport_scale)
+
+	def _practice_min_width(self) -> int:
+		# At the entry width the scale is 1.0 and the content exactly fills the
+		# window. Below it, fixed-size parts would overflow, so the window stops there.
+		base = self._practice_base_size
+		return base.width() if base is not None else 0
+
 
 	def _step_slider(self, slider: QSlider, delta: int) -> None:
 		slider.setValue(slider.value() + delta)
@@ -2014,9 +2234,13 @@ class MainWindow(QMainWindow):
 					)
 				else:
 					is_visible = filter_text in path.name.casefold()
-			self.file_tree.setRowHidden(row, parent_index, not is_visible)
-			if self.file_system_model.isDir(index):
+			if self.file_tree.isRowHidden(row, parent_index) != (not is_visible):
+				self.file_tree.setRowHidden(row, parent_index, not is_visible)
+			if self.file_system_model.isDir(index) and self.file_tree.isExpanded(index):
 				self._update_file_tree_visibility(parent_index=index)
+
+	def _update_expanded_file_tree_visibility(self, index: QModelIndex) -> None:
+		self._update_file_tree_visibility(parent_index=index)
 
 	def _reveal_file_tree_path(self, path: str | Path, *, include_descendants: bool) -> None:
 		normalized = self._normalize_path(path)

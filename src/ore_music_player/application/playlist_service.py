@@ -27,6 +27,9 @@ class PlaylistService:
     def list_all(self) -> tuple[Playlist, ...]:
         return self.repository.list_all()
 
+    def reorder_playlists(self, ordered_playlist_ids: Sequence[str]) -> None:
+        self.repository.reorder_playlists(ordered_playlist_ids)
+
     def rename(self, playlist_id: str, new_name: str) -> Playlist:
         playlist = self.get(playlist_id)
         update_playlist = playlist.rename(new_name)

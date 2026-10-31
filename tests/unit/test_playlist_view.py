@@ -17,6 +17,7 @@ from ore_music_player.ui.playlist_view import (
     PlaylistTrackSelection,
     PlaylistView,
 )
+from ore_music_player.ui.icon_button import IconButton
 
 
 @pytest.fixture(scope="session")
@@ -159,11 +160,111 @@ def test_playlist_action_buttons_match_transport_size(
 ) -> None:
     view, _ = make_view(qt_application)
 
-    buttons = view.findChildren(QPushButton)
+    buttons = view.findChildren(IconButton)
+    large_buttons = list(view._playlist_action_buttons)
+    arrow_buttons = [button for button in buttons if button.width() == 24]
 
-    assert len(buttons) == 3
-    assert all(button.width() == 96 and button.height() == 96 for button in buttons)
+    assert len(large_buttons) == 3
+    assert len(arrow_buttons) == 2
+    assert all(button.height() == button.width() for button in large_buttons)
+    assert all(button.width() == 24 and button.height() == 24 for button in arrow_buttons)
     assert all(button.text() != "プレイリスト\nを再生" for button in buttons)
+
+
+def test_playlist_action_buttons_fill_panel_width_and_scale(
+    qt_application: QApplication,
+) -> None:
+    view, _ = make_view(qt_application)
+    view.show()
+
+    def settled_button_widths(width: int) -> list[int]:
+        view.resize(width, 600)
+        for _ in range(5):
+            qt_application.processEvents()
+        return [button.width() for button in view._playlist_action_buttons]
+
+    narrow = settled_button_widths(900)
+    wide = settled_button_widths(1400)
+
+    assert len(set(narrow)) == 1
+    assert len(set(wide)) == 1
+    assert wide[0] > narrow[0]
+    assert sum(wide) <= view._playlist_panel.width()
+    view.close()
+
+
+def test_playlist_pane_shrinks_after_growing_without_history_drift(
+    qt_application: QApplication,
+) -> None:
+    view, _ = make_view(qt_application)
+    view.show()
+
+    def settle(width: int) -> None:
+        view.resize(width, 600)
+        for _ in range(5):
+            qt_application.processEvents()
+
+    settle(1400)
+    settle(300)
+    assert view.width() == 300
+    shrunk_buttons = [button.width() for button in view._playlist_action_buttons]
+
+    fresh, _ = make_view(qt_application)
+    fresh.show()
+    fresh.resize(300, 600)
+    for _ in range(5):
+        qt_application.processEvents()
+    fresh_buttons = [button.width() for button in fresh._playlist_action_buttons]
+
+    assert shrunk_buttons == fresh_buttons
+    assert sum(shrunk_buttons) <= view._playlist_panel.width()
+    fresh.close()
+    view.close()
+
+
+def test_playlist_order_can_be_changed_with_buttons_and_drag_reorder(
+    qt_application: QApplication,
+) -> None:
+    view, repository = make_view(qt_application)
+    repository.save(Playlist("playlist-002", "Warmup"))
+    view.refresh()
+
+    view.playlist_list.setCurrentRow(0)
+    view._move_selected_playlist(0, 1)
+
+    assert [playlist.playlist_id for playlist in repository.list_all()] == [
+        "playlist-002",
+        "playlist-001",
+    ]
+
+    item = view.playlist_list.takeItem(0)
+    assert item is not None
+    view.playlist_list.insertItem(1, item)
+    view._reorder_playlists()
+
+    assert [playlist.playlist_id for playlist in repository.list_all()] == [
+        "playlist-001",
+        "playlist-002",
+    ]
+
+
+def test_track_order_can_be_changed_with_buttons(
+    qt_application: QApplication,
+) -> None:
+    view, repository = make_view(qt_application)
+    tracks = tuple(
+        Track(f"track-00{index}", f"song-{index}.mp3", f"Song {index}")
+        for index in range(1, 3)
+    )
+    repository.save(Playlist("playlist-001", "Practice", tracks))
+    view.refresh()
+    view.track_list.selectRow(0)
+
+    view._move_selected_track(0, 1)
+
+    playlist = repository.get("playlist-001")
+    assert playlist is not None
+    assert playlist.tracks == (tracks[1], tracks[0])
 
 
 def test_track_table_reorders_tracks_and_persists_order(

@@ -9,12 +9,14 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
 	QAbstractItemView,
-	QGridLayout,
+	QHBoxLayout,
 	QHeaderView,
 	QInputDialog,
 	QLabel,
 	QListWidget,
+	QListWidgetItem,
 	QMessageBox,
+	QSizePolicy,
 	QSplitter,
 	QTableWidget,
 	QTableWidgetItem,
@@ -29,7 +31,8 @@ from ore_music_player.ui.icon_button import IconButton
 from ore_music_player.ui.utils import format_duration
 
 TILE_BUTTON_SIZE = 96
-TILE_GRID_SPACING = 4
+MIN_ACTION_BUTTON_SIDE = 24
+REORDER_BUTTON_SIZE = 24
 SUPPORTED_AUDIO_SUFFIXES = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
 LIST_HEADER_HEIGHT = 28
 PLAYING_BACKGROUND_COLOR = "#b8d8e8"
@@ -45,6 +48,7 @@ class PlaylistTrackSelection:
 
 class PlaylistListWidget(QListWidget):
 	paths_dropped = Signal(object)
+	rows_reordered = Signal()
 
 	def dragEnterEvent(self, event) -> None:
 		if event.mimeData().hasUrls():
@@ -69,10 +73,12 @@ class PlaylistListWidget(QListWidget):
 			event.acceptProposedAction()
 			return
 		super().dropEvent(event)
+		self.rows_reordered.emit()
 
 
 class TrackTableWidget(QTableWidget):
 	_NAME_COLUMN_RATIO = 0.8
+	_ORDER_COLUMN_WIDTH = 56
 	paths_dropped = Signal(object)
 	rows_reordered = Signal()
 
@@ -117,12 +123,41 @@ class TrackTableWidget(QTableWidget):
 		available_width = header.viewport().width()
 		if available_width <= 0:
 			return
-		remaining = max(0, available_width - self._STEM_COLUMN_WIDTH)
+		remaining = max(
+			0,
+			available_width - self._STEM_COLUMN_WIDTH - self._ORDER_COLUMN_WIDTH,
+		)
 		name_width = int(remaining * self._NAME_COLUMN_RATIO)
 		duration_width = remaining - name_width
 		header.resizeSection(0, name_width)
 		header.resizeSection(1, duration_width)
 		header.resizeSection(2, self._STEM_COLUMN_WIDTH)
+		header.resizeSection(3, self._ORDER_COLUMN_WIDTH)
+
+
+class PlaylistActionBar(QWidget):
+	"""Places square buttons edge to edge across the bar.
+
+	Buttons are positioned by hand rather than by a layout: their fixed sizes
+	would otherwise become the bar's minimum width, and that minimum tracks the
+	current width, so the pane could never shrink.
+	"""
+
+	def __init__(self, buttons: tuple[IconButton, ...]) -> None:
+		super().__init__()
+		self._buttons = buttons
+		for button in buttons:
+			button.setParent(self)
+		self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
+	def resizeEvent(self, event) -> None:
+		super().resizeEvent(event)
+		slot = max(MIN_ACTION_BUTTON_SIDE, self.width() // len(self._buttons))
+		if self.height() != slot:
+			self.setFixedHeight(slot)
+		for index, button in enumerate(self._buttons):
+			button.set_scale(slot / TILE_BUTTON_SIZE)
+			button.move(index * slot, 0)
 
 
 class PlaylistView(QWidget):
@@ -157,8 +192,9 @@ class PlaylistView(QWidget):
 
 		self.playlist_list = PlaylistListWidget()
 		self.playlist_list.setAcceptDrops(True)
-		self.playlist_list.setDropIndicatorShown(False)
-		self.playlist_list.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+		self.playlist_list.setDropIndicatorShown(True)
+		self.playlist_list.setDragEnabled(True)
+		self.playlist_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
 		self.playlist_list.setSelectionMode(
 			QAbstractItemView.SelectionMode.ExtendedSelection
 		)
@@ -167,33 +203,31 @@ class PlaylistView(QWidget):
 			self._playlist_selection_changed
 		)
 		self.playlist_list.paths_dropped.connect(self._add_dropped_paths)
+		self.playlist_list.rows_reordered.connect(self._reorder_playlists)
 		playlist_layout.addWidget(self.playlist_list, 1)
 
-		playlist_buttons = QGridLayout()
-		playlist_buttons.setHorizontalSpacing(TILE_GRID_SPACING)
-		playlist_buttons.setVerticalSpacing(TILE_GRID_SPACING)
 		create_button = self._create_icon_button(
 			"新規作成",
 			"new_playlist",
 			self.create_playlist,
 		)
-		playlist_buttons.addWidget(create_button, 0, 0)
 		rename_button = self._create_icon_button(
 			"名前変更",
 			"rename",
 			self.rename_playlist,
 		)
-		playlist_buttons.addWidget(rename_button, 0, 1)
 		delete_button = self._create_icon_button(
 			"削除",
 			"delete",
 			self.delete_selected,
 		)
-		playlist_buttons.addWidget(delete_button, 0, 2)
-		playlist_layout.addLayout(playlist_buttons)
+		self._playlist_panel = playlist_panel
+		self._playlist_action_buttons = (create_button, rename_button, delete_button)
+		self._action_bar = PlaylistActionBar(self._playlist_action_buttons)
+		playlist_layout.addWidget(self._action_bar)
 
-		self.track_list = TrackTableWidget(0, 3)
-		self.track_list.setHorizontalHeaderLabels(["曲名", "再生時間", "♫"])
+		self.track_list = TrackTableWidget(0, 4)
+		self.track_list.setHorizontalHeaderLabels(["曲名", "再生時間", "♫", "順序"])
 		self.track_list.horizontalHeader().setSectionResizeMode(
 			QHeaderView.ResizeMode.Fixed
 		)
@@ -229,19 +263,80 @@ class PlaylistView(QWidget):
 		self.refresh()
 
 	@staticmethod
-	def _create_icon_button(label: str, art: str, handler) -> IconButton:
-		button = IconButton(TILE_BUTTON_SIZE, label, art)
+	def _create_icon_button(
+		label: str,
+		art: str,
+		handler,
+		size: int = TILE_BUTTON_SIZE,
+	) -> IconButton:
+		button = IconButton(size, label, art)
 		button.clicked.connect(handler)
 		return button
 
+	@staticmethod
+	def _create_arrow_button(
+		arrow: str,
+		label: str,
+		handler,
+	) -> IconButton:
+		art = "reorder_up" if arrow == "↑" else "reorder_down"
+		button = IconButton(REORDER_BUTTON_SIZE, label, art)
+		button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+		button.clicked.connect(handler)
+		return button
+
+	def _create_playlist_item_widget(
+		self,
+		item: QListWidgetItem,
+		row: int,
+	) -> QWidget:
+		widget = QWidget()
+		layout = QHBoxLayout(widget)
+		layout.setContentsMargins(4, 1, 2, 1)
+		layout.setSpacing(2)
+		label = QLabel(item.text())
+		label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+		label.setSizePolicy(
+			QSizePolicy.Policy.Expanding,
+			QSizePolicy.Policy.Preferred,
+		)
+		layout.addWidget(label)
+		layout.addWidget(
+			self._create_arrow_button(
+				"↑",
+				"上へ",
+				lambda: self._move_selected_playlist(row, -1),
+			)
+		)
+		layout.addWidget(
+			self._create_arrow_button(
+				"↓",
+				"下へ",
+				lambda: self._move_selected_playlist(row, 1),
+			)
+		)
+		return widget
+
 	def refresh(self) -> None:
-		selected_id = self.selected_playlist_id()
+		selected_item = self.playlist_list.currentItem()
+		selected_id = (
+			selected_item.data(Qt.ItemDataRole.UserRole)
+			if selected_item is not None
+			else self._active_playlist_id
+		)
 		self._playlists = self.playlist_service.list_all()
 		self.playlist_list.blockSignals(True)
 		self.playlist_list.clear()
 		for playlist in self._playlists:
-			self.playlist_list.addItem(
-				f"{playlist.name} ({len(playlist.tracks)}曲)"
+			item = QListWidgetItem(f"{playlist.name} ({len(playlist.tracks)}曲)")
+			item.setData(Qt.ItemDataRole.UserRole, playlist.playlist_id)
+			self.playlist_list.addItem(item)
+			self.playlist_list.setItemWidget(
+				item,
+				self._create_playlist_item_widget(
+					item,
+					self.playlist_list.row(item),
+				),
 			)
 		self.playlist_list.blockSignals(False)
 
@@ -391,6 +486,25 @@ class PlaylistView(QWidget):
 			stem_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 			stem_item.setFlags(stem_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 			self.track_list.setItem(track_row, 2, stem_item)
+			order_widget = QWidget()
+			order_layout = QHBoxLayout(order_widget)
+			order_layout.setContentsMargins(2, 1, 2, 1)
+			order_layout.setSpacing(2)
+			order_layout.addWidget(
+				self._create_arrow_button(
+					"↑",
+					"上へ",
+					lambda row=track_row: self._move_selected_track(row, -1),
+				)
+			)
+			order_layout.addWidget(
+				self._create_arrow_button(
+					"↓",
+					"下へ",
+					lambda row=track_row: self._move_selected_track(row, 1),
+				)
+			)
+			self.track_list.setCellWidget(track_row, 3, order_widget)
 		self._update_playing_highlights()
 
 	def _playlist_selection_changed(self) -> None:
@@ -533,6 +647,46 @@ class PlaylistView(QWidget):
 			ordered_track_ids,
 		)
 		self.refresh()
+
+	def _reorder_playlists(self) -> None:
+		ordered_playlist_ids = [
+			item.data(Qt.ItemDataRole.UserRole)
+			for row in range(self.playlist_list.count())
+			if (item := self.playlist_list.item(row)) is not None
+		]
+		if len(ordered_playlist_ids) != len(self._playlists):
+			self.refresh()
+			return
+		self.playlist_service.reorder_playlists(ordered_playlist_ids)
+		self.refresh()
+
+	def _move_selected_playlist(self, row: int, delta: int) -> None:
+		new_row = row + delta
+		if not 0 <= row < self.playlist_list.count():
+			return
+		if not 0 <= new_row < self.playlist_list.count():
+			return
+		item = self.playlist_list.takeItem(row)
+		self.playlist_list.insertItem(new_row, item)
+		self.playlist_list.setCurrentRow(new_row)
+		self._reorder_playlists()
+
+	def _move_selected_track(self, row: int, delta: int) -> None:
+		playlist = self.selected_playlist()
+		new_row = row + delta
+		if (
+			playlist is None
+			or not 0 <= row < len(playlist.tracks)
+			or not 0 <= new_row < len(playlist.tracks)
+		):
+			return
+		self.playlist_service.move_track(
+			playlist.playlist_id,
+			current_index=row,
+			new_index=new_row,
+		)
+		self.refresh()
+		self.track_list.selectRow(new_row)
 
 	def _play_selected_track(self, item: QTableWidgetItem) -> None:
 		playlist = self.selected_playlist()
