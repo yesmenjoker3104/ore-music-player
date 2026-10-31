@@ -658,6 +658,45 @@ def test_delete_button_unregisters_multiple_selected_audio_files(
     window.close()
 
 
+def test_readding_unregistered_subfolder_shows_it_in_file_tree(
+    qt_application: QApplication,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    window, _ = make_window(qt_application)
+    parent = tmp_path / "music"
+    sub = parent / "practice"
+    sub.mkdir(parents=True)
+    (sub / "song.wav").write_bytes(b"audio")
+
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: str(parent))
+    window.open_folder()
+    QTest.qWait(100)
+
+    select_rows = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+    window.file_tree.selectionModel().select(
+        window.file_system_model.index(str(sub)),
+        select_rows,
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+    window.delete_selected_files()
+    sub_index = window.file_system_model.index(str(sub))
+    assert window.file_tree.isRowHidden(sub_index.row(), sub_index.parent())
+
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: str(sub))
+    window.open_folder()
+    QTest.qWait(100)
+
+    sub_index = window.file_system_model.index(str(sub))
+    assert not window.file_tree.isRowHidden(sub_index.row(), sub_index.parent())
+    assert [Path(track.path).name for track in window._queue] == ["song.wav"]
+    window.close()
+
+
 def test_delete_button_supports_folders_and_cancel_keeps_file(
     qt_application: QApplication,
     monkeypatch,

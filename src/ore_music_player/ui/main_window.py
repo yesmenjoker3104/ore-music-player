@@ -1856,6 +1856,9 @@ class MainWindow(QMainWindow):
 		)
 		if file_paths:
 			self._registered_folders.add(Path(file_paths[0]).parent.resolve())
+			self._reveal_file_tree_path(Path(file_paths[0]).parent, include_descendants=False)
+			for file_path in file_paths:
+				self._reveal_file_tree_path(file_path, include_descendants=False)
 			self._save_registered_folders()
 			self._sync_file_tree_roots()
 			self._set_file_tree_root(Path(file_paths[0]).parent)
@@ -1881,6 +1884,7 @@ class MainWindow(QMainWindow):
 		if not folder_path:
 			return
 		self._registered_folders.add(Path(folder_path).resolve())
+		self._reveal_file_tree_path(folder_path, include_descendants=True)
 		self._save_registered_folders()
 		self._sync_file_tree_roots()
 		self._set_file_tree_root(folder_path)
@@ -2013,6 +2017,18 @@ class MainWindow(QMainWindow):
 			self.file_tree.setRowHidden(row, parent_index, not is_visible)
 			if self.file_system_model.isDir(index):
 				self._update_file_tree_visibility(parent_index=index)
+
+	def _reveal_file_tree_path(self, path: str | Path, *, include_descendants: bool) -> None:
+		normalized = self._normalize_path(path)
+		self._hidden_file_paths = {
+			hidden
+			for hidden in self._hidden_file_paths
+			if not (
+				hidden == normalized
+				or hidden in normalized.parents
+				or (include_descendants and normalized in hidden.parents)
+			)
+		}
 
 	def _hide_paths_from_file_tree(self, paths: list[Path] | tuple[Path, ...]) -> None:
 		for path in paths:
