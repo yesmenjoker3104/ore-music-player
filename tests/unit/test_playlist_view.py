@@ -8,16 +8,15 @@ from PySide6.QtWidgets import (
     QApplication,
     QLabel,
     QMessageBox,
-    QPushButton,
 )
 
 from ore_music_player.application.playlist_service import PlaylistService
 from ore_music_player.domain.models import Playlist, Track
+from ore_music_player.ui.icon_button import IconButton
 from ore_music_player.ui.playlist_view import (
     PlaylistTrackSelection,
     PlaylistView,
 )
-from ore_music_player.ui.icon_button import IconButton
 
 
 @pytest.fixture(scope="session")
