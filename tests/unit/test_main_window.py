@@ -1787,6 +1787,41 @@ def test_loaded_tracks_keep_current_index_when_navigating(
     window.close()
 
 
+def test_previous_button_restarts_track_after_two_seconds(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    tracks = (
+        Track("track-001", "first.mp3", "First song"),
+        Track("track-002", "second.mp3", "Second song"),
+    )
+    window.load_tracks(tracks, index=1)
+    backend.position_seconds = 5.0
+
+    window.previous_track()
+
+    assert window._queue_index == 1
+    assert backend.position_seconds == 0.0
+    window.close()
+
+
+def test_previous_button_goes_to_previous_track_within_two_seconds(
+    qt_application: QApplication,
+) -> None:
+    window, backend = make_window(qt_application)
+    tracks = (
+        Track("track-001", "first.mp3", "First song"),
+        Track("track-002", "second.mp3", "Second song"),
+    )
+    window.load_tracks(tracks, index=1)
+    backend.position_seconds = 1.5
+
+    window.previous_track()
+
+    assert window._queue_index == 0
+    window.close()
+
+
 def test_ab_buttons_show_positions_and_toggle_loop_button(
     qt_application: QApplication,
 ) -> None:

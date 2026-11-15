@@ -112,6 +112,7 @@ SUPPORTED_AUDIO_SUFFIXES = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
 SUPPORTED_AUDIO_NAME_FILTERS = [f"*{suffix}" for suffix in SUPPORTED_AUDIO_SUFFIXES]
 SEEK_SCALE = 1000
 SEEK_STEP_SECONDS = 3.0
+PREVIOUS_TRACK_RESTART_SECONDS = 2.0
 SLIDER_GROOVE_HEIGHT = 18
 SLIDER_HANDLE_SIZE = 28
 SLIDER_MINIMUM_HEIGHT = 44
@@ -2876,9 +2877,12 @@ class MainWindow(QMainWindow):
 		self._seek_relative(SEEK_STEP_SECONDS)
 
 	def _seek_relative(self, offset_seconds: float) -> None:
+		self._seek_to(self.playback_service.position_seconds + offset_seconds)
+
+	def _seek_to(self, position_seconds: float) -> None:
 		if self._current_track is None:
 			return
-		position = max(0.0, self.playback_service.position_seconds + offset_seconds)
+		position = max(0.0, position_seconds)
 		if self._duration_seconds > 0:
 			position = min(position, self._duration_seconds)
 		if self._try_seek(position):
@@ -2896,9 +2900,14 @@ class MainWindow(QMainWindow):
 		return True
 
 	def previous_track(self) -> None:
-		if self._queue_index > 0:
-			self._queue_index -= 1
-			self._load_current_track(autoplay=True)
+		if (
+			self._queue_index == 0
+			or self._current_position_for_action() >= PREVIOUS_TRACK_RESTART_SECONDS
+		):
+			self._seek_to(0.0)
+			return
+		self._queue_index -= 1
+		self._load_current_track(autoplay=True)
 
 	def next_track(self) -> None:
 		self._advance_track(automatic=False)
